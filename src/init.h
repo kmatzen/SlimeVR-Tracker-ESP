@@ -23,19 +23,17 @@
 
 #include <Arduino.h>
 #ifdef ESP8266
-#include <user_interface.h> // Include this to define rst_info
-
+#include <user_interface.h>  // Include this to define rst_info
 
 typedef struct rtc_mem {
-	uint32_t version;      // RTC memory version
+	uint32_t version;  // RTC memory version
 	uint32_t rebootCount;  // Number of reboots
 } rtc_mem_t;
 
 // Constructor function that runs during static initialization (before setup)
-__attribute__((constructor))
-void checkrebootcount(){
+__attribute__((constructor)) void checkrebootcount() {
 	Serial.begin(115200);
-	struct rst_info *resetreason;
+	struct rst_info* resetreason;
 	rtc_mem_t rtcMem;
 	resetreason = ESP.getResetInfoPtr();
 	Serial.println("Reset reason code: " + String(resetreason->reason));
@@ -48,9 +46,9 @@ void checkrebootcount(){
 		rtcMem.version = 0x01;
 		rtcMem.rebootCount = 0;
 	}
-	if (resetreason->reason != REASON_SOFT_WDT_RST &&
-	    resetreason->reason != REASON_EXCEPTION_RST &&
-	    resetreason->reason != REASON_WDT_RST) {
+	if (resetreason->reason != REASON_SOFT_WDT_RST
+		&& resetreason->reason != REASON_EXCEPTION_RST
+		&& resetreason->reason != REASON_WDT_RST) {
 		// Not a crash, reset reboot counter
 		rtcMem.rebootCount = 0;
 	} else {
@@ -75,8 +73,6 @@ void checkrebootcount(){
 	}
 	Serial.println("Reboot Count: " + String(rtcMem.rebootCount));
 	ESP.rtcUserMemoryWrite(33, (uint32_t*)&rtcMem, sizeof(struct rtc_mem));
-
-
 }
 
 #endif
