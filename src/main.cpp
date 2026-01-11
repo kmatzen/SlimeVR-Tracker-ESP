@@ -21,8 +21,11 @@
 	THE SOFTWARE.
 */
 
-#include <i2cscan.h>
+#ifdef esp8266
+#include "init.h"
+#endif
 
+#include <i2cscan.h>
 #include "GlobalVars.h"
 #include "Wire.h"
 #include "batterymonitor.h"
@@ -59,6 +62,10 @@ BatteryMonitor battery;
 TPSCounter tpsCounter;
 
 void setup() {
+	while (true) {
+
+
+	}
 	Serial.begin(serialBaudRate);
 	globalTimer = timer_create_default();
 
@@ -158,6 +165,9 @@ void loop() {
 	SerialCommands::update();
 	OTA::otaUpdate();
 	networkManager.update();
+
+	// Process buffered logs
+	SlimeVR::Logging::LogBuffer::getInstance().processCycle();
 
 #if DEBUG_MEASURE_SENSOR_TIME_TAKEN
 	sensorMeasurer.before();
