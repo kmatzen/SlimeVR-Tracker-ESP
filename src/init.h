@@ -42,7 +42,9 @@ extern "C" void preinit(void) {
 	ESP.rtcUserMemoryRead(33, (uint32_t*)&rtcMem, sizeof(struct rtc_mem));
 	Serialtemp.begin(115200);
 	Serialtemp.println(F("\r\n==== SLVR Boot ===="));
-	Serialtemp.println(F("Reboot reason code: ") + String(ESP.getResetInfoPtr()->reason));
+	Serialtemp.println(
+		F("Reboot reason code: ") + String(ESP.getResetInfoPtr()->reason)
+	);
 	Serialtemp.println(F("Core Version: ") + ESP.getCoreVersion());
 	Serialtemp.println(F("SDK version: ") + String(ESP.getSdkVersion()));
 	Serialtemp.println(F("Sketch MD5: ") + String(ESP.getSketchMD5()));
