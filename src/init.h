@@ -23,24 +23,31 @@
 
 #include <Arduino.h>
 #ifdef ESP8266
-#include <user_interface.h>  // Include this to define rst_info
+#include <user_interface.h>
 
 typedef struct rtc_mem {
 	uint32_t version;  // RTC memory version
 	uint32_t rebootCount;  // Number of reboots
 } rtc_mem_t;
 
-// Constructor function that runs during static initialization (before setup)
-__attribute__((constructor)) void checkrebootcount() {
-	Serial.begin(115200);
+extern "C" void preinit(void) {
+	HardwareSerial Serialtemp(0);
 	struct rst_info* resetreason;
 	rtc_mem_t rtcMem;
 	resetreason = ESP.getResetInfoPtr();
-	Serial.println("Reset reason code: " + String(resetreason->reason));
+	Serialtemp.begin(115200);
+
+	Serialtemp.println("\r\n==== SLVR Boot ====");
+	Serialtemp.println("Reboot reason code: " + String(ESP.getResetInfoPtr()->reason));
+	Serialtemp.println("Core Version: " + ESP.getCoreVersion());
+	Serialtemp.println("SDK version: " + String(ESP.getSdkVersion()));
+	Serialtemp.println("Sketch MD5: " + String(ESP.getSketchMD5()));
+	Serialtemp.println("Reset reason code: " + String(resetreason->reason));
+
 	// Offset 33 to avoid eboot command area
 	ESP.rtcUserMemoryRead(33, (uint32_t*)&rtcMem, sizeof(struct rtc_mem));
-	Serial.println("RTC Memory Version: " + String(rtcMem.version));
-	Serial.println("RTC Memory Reboot Count: " + String(rtcMem.rebootCount));
+	Serialtemp.println("RTC Memory Version: " + String(rtcMem.version));
+	Serialtemp.println("RTC Memory Reboot Count: " + String(rtcMem.rebootCount));
 	if (rtcMem.version != 0x01) {
 		// First boot, initialize RTC memory
 		rtcMem.version = 0x01;
@@ -59,20 +66,19 @@ __attribute__((constructor)) void checkrebootcount() {
 		if (rtcMem.rebootCount >= 3) {
 			// Implement safe mode actions here
 			// For example, disable certain features or notify the user
-			Serial.begin(115200);
-			Serial.println("Entering safe mode due to repeated crashes.");
-			// Additional safe mode logic can be added here
-#if defined(ESP8266)
-			Serial.println("Entering flash mode...");
+			Serialtemp.println("\r\n\r\nEntering safe mode due to repeated crashes.");
+			Serialtemp.println("Entering flash mode...");
+			Serialtemp.flush();
+			Serialtemp.end();
 			delay(1000);
 			ESP.rebootIntoUartDownloadMode();
-#else
-			Serial.println("Flash mode not supported on this platform!");
-#endif
 		}
 	}
-	Serial.println("Reboot Count: " + String(rtcMem.rebootCount));
 	ESP.rtcUserMemoryWrite(33, (uint32_t*)&rtcMem, sizeof(struct rtc_mem));
-}
 
+	Serialtemp.println("=== SLVR Boot end ===");
+	Serialtemp.flush();
+	// Deinit UART for main code to reinitialize
+	Serialtemp.end();
+}
 #endif

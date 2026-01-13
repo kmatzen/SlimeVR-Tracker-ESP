@@ -21,10 +21,6 @@
 	THE SOFTWARE.
 */
 
-#ifdef esp8266
-#include "init.h"
-#endif
-
 #include <i2cscan.h>
 
 #include "GlobalVars.h"
@@ -33,6 +29,7 @@
 #include "credentials.h"
 #include "debugging/TimeTaken.h"
 #include "globals.h"
+#include "init.h"
 #include "logging/Logger.h"
 #include "ota.h"
 #include "serial/serialcommands.h"
