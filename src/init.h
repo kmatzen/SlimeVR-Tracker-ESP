@@ -51,7 +51,7 @@ extern "C" void preinit(void) {
 	Serialtemp.println(F("Reset reason code: ") + String(resetreason->reason));
 	Serialtemp.println(F("RTC Memory Version: ") + String(rtcMem.version));
 	Serialtemp.println(F("RTC Memory Reboot Count: ") + String(rtcMem.rebootCount));
-	Serialtemp.println("");
+	Serialtemp.println();
 	Serialtemp.println(F("PRODUCT_NAME: ") + String(PRODUCT_NAME));
 	Serialtemp.println(F("VENDOR_NAME: ") + String(VENDOR_NAME));
 	Serialtemp.println(F("VENDOR_URL: ") + String(VENDOR_URL));
@@ -80,9 +80,9 @@ extern "C" void preinit(void) {
 		// If more than 3 consecutive crashes, enter safe mode
 		if (rtcMem.rebootCount >= 3) {
 			// Boot into UART download mode
-			Serialtemp.println(
-				F("\r\n\r\nEntering safe mode due to repeated crashes.")
-			);
+			Serialtemp.println();
+			Serialtemp.println();
+			Serialtemp.println(F("Entering safe mode due to repeated crashes."));
 			Serialtemp.println(F("Entering flash mode..."));
 			// Serial needs to be stay active for
 			// rebootIntoUartDownloadMode to work.
