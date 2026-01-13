@@ -67,8 +67,9 @@ extern "C" void preinit(void) {
 			// Boot into UART download mode
 			Serialtemp.println("\r\n\r\nEntering safe mode due to repeated crashes.");
 			Serialtemp.println("Entering flash mode...");
-			Serialtemp.flush();
-			Serialtemp.end();
+			// Serial needs to be stay active for
+			// rebootIntoUartDownloadMode to work.
+			// Found out over testing.
 			delay(1000);
 			ESP.rebootIntoUartDownloadMode();
 		}
