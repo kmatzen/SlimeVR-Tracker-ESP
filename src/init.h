@@ -64,8 +64,7 @@ extern "C" void preinit(void) {
 
 		// If more than 3 consecutive crashes, enter safe mode
 		if (rtcMem.rebootCount >= 3) {
-			// Implement safe mode actions here
-			// For example, disable certain features or notify the user
+			// Boot into UART download mode
 			Serialtemp.println("\r\n\r\nEntering safe mode due to repeated crashes.");
 			Serialtemp.println("Entering flash mode...");
 			Serialtemp.flush();
