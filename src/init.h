@@ -42,13 +42,10 @@ extern "C" void preinit(void) {
 	ESP.rtcUserMemoryRead(33, (uint32_t*)&rtcMem, sizeof(struct rtc_mem));
 	Serialtemp.begin(115200);
 	Serialtemp.println(F("\r\n==== SLVR Boot ===="));
-	Serialtemp.println(
-		F("Reboot reason code: ") + String(ESP.getResetInfoPtr()->reason)
-	);
+	Serialtemp.println(F("Reboot reason code: ") + String(resetreason->reason));
 	Serialtemp.println(F("Core Version: ") + ESP.getCoreVersion());
 	Serialtemp.println(F("SDK version: ") + String(ESP.getSdkVersion()));
 	Serialtemp.println(F("Sketch MD5: ") + String(ESP.getSketchMD5()));
-	Serialtemp.println(F("Reset reason code: ") + String(resetreason->reason));
 	Serialtemp.println(F("RTC Memory Version: ") + String(rtcMem.version));
 	Serialtemp.println(F("RTC Memory Reboot Count: ") + String(rtcMem.rebootCount));
 	Serialtemp.println();
@@ -97,5 +94,103 @@ extern "C" void preinit(void) {
 	Serialtemp.flush();
 	// Deinit UART for main code to reinitialize
 	Serialtemp.end();
+}
+#endif
+
+#ifdef ESP32
+#include "esp_system.h"
+#if defined(CONFIG_IDF_TARGET_ESP32C3)
+#include "soc/rtc_cntl_reg.h"
+#endif
+//#include "driver/rtc_io.h"
+#include "esp_chip_info.h"
+#include "esp_intr_alloc.h"
+
+#define STRINGIFY(x) #x
+#define TOSTRING(x) STRINGIFY(x)
+
+typedef struct rtc_mem {
+	uint32_t version;  // RTC memory version
+	uint32_t rebootCount;  // Number of reboots
+} rtc_mem_t;
+
+// infos from https://circuitlabs.net/rtc-memory-usage-in-esp-idf/
+RTC_DATA_ATTR rtc_mem_t rtcMem;
+
+extern "C" void initVariant(void) {
+	esp_reset_reason_t resetreason;
+
+	resetreason = esp_reset_reason();
+
+	// don't need to read RTC memory as it is cleard on a WDT reset on ESP32
+
+	Serial.begin(115200);
+	Serial.println(F("\r\n==== SLVR Boot ===="));
+	Serial.println(String(F("Reboot reason code: ")) + String(resetreason));
+	Serial.println(String(F("Core Version: ")) + String(ESP.getCoreVersion()));
+	Serial.println(String(F("SDK version: ")) + String(ESP.getSdkVersion()));
+	Serial.println(String(F("Sketch MD5: ")) + String(ESP.getSketchMD5()));
+	Serial.println(String(F("RTC Memory Version: ")) + String(rtcMem.version));
+	Serial.println(String(F("RTC Memory Reboot Count: ")) + String(rtcMem.rebootCount));
+	Serial.println();
+	Serial.println(String(F("PRODUCT_NAME: ")) + String(PRODUCT_NAME));
+	Serial.println(String(F("VENDOR_NAME: ")) + String(VENDOR_NAME));
+	Serial.println(String(F("VENDOR_URL: ")) + String(VENDOR_URL));
+	Serial.println(String(F("Firmware update URL: ")) + String(UPDATE_ADDRESS));
+	Serial.println(String(F("BOARD: ")) + String(BOARD));
+	Serial.println(String(F("HARDWARE_MCU: ")) + String(HARDWARE_MCU));
+	Serial.println(String(F("PROTOCOL_VERSION: ")) + String(PROTOCOL_VERSION));
+	Serial.println(String(F("FIRMWARE_VERSION: ")) + String(FIRMWARE_VERSION));
+	Serial.println(F("SENSOR_DESC_LIST: "));
+	Serial.println(String(TOSTRING(SENSOR_DESC_LIST)));
+
+	if (rtcMem.version != 0x01) {
+		// First boot, initialize RTC memory
+		rtcMem.version = 0x01;
+		rtcMem.rebootCount = 0;
+	}
+	if (resetreason != ESP_RST_PANIC && resetreason != ESP_RST_INT_WDT
+		&& resetreason != ESP_RST_TASK_WDT && resetreason != ESP_RST_WDT
+		&& resetreason != ESP_RST_CPU_LOCKUP) {
+		// Not a crash, reset reboot counter
+		rtcMem.rebootCount = 0;
+	} else {
+		// Crash detected
+		// ESP32 ram gets cleared on WDT reset, force safe mode
+		rtcMem.rebootCount = 4;
+
+		// If more than 3 consecutive crashes, enter safe mode
+		if (rtcMem.rebootCount >= 3) {
+			// Boot into UART download mode
+			Serial.println();
+			Serial.println();
+
+#if defined(CONFIG_IDF_TARGET_ESP32C3)
+			Serial.println(F("Entering safe mode due to repeated crashes."));
+			Serial.println(F("Entering flash mode..."));
+			// from https://esp32.com/viewtopic.php?t=33180
+			delay(1000);
+			REG_WRITE(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
+			esp_restart();
+#else
+			Serial.println(
+				F("The Firmware does not support reboot into UART download mode for "
+				  "this board.")
+			);
+			Serial.println(
+				F("You need to manually enter flash mode by holding BOOT button while "
+				  "resetting.")
+			);
+			while (true) {
+				delay(100);  // Halt
+			}
+#endif
+		}
+	}
+	// no need to write, rtcMem is in RTC memory it does it automatically
+	// ESP.rtcUserMemoryWrite(33, (uint32_t*)&rtcMem, sizeof(struct rtc_mem));
+
+	Serial.println(F("=== SLVR Boot end ==="));
+	Serial.flush();
 }
 #endif

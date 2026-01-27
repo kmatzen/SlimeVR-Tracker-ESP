@@ -33,6 +33,9 @@
 
 #ifdef ESP32
 #include "nvs_flash.h"
+#if defined(CONFIG_IDF_TARGET_ESP32C3)
+#include "soc/rtc_cntl_reg.h"
+#endif
 #endif
 
 #ifdef EXT_SERIAL_COMMANDS
@@ -163,6 +166,12 @@ void cmdSet(CmdParser* parser) {
 			logger.info("Entering flash mode...");
 			delay(1000);
 			ESP.rebootIntoUartDownloadMode();
+#elif defined(CONFIG_IDF_TARGET_ESP32C3)
+			logger.info("Entering flash mode...");
+			delay(1000);
+			// from https://esp32.com/viewtopic.php?t=33180
+			REG_WRITE(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
+			esp_restart();
 #else
 			logger.info("Flash mode not supported on this platform!");
 #endif
