@@ -102,7 +102,6 @@ extern "C" void preinit(void) {
 #if defined(CONFIG_IDF_TARGET_ESP32C3)
 #include "soc/rtc_cntl_reg.h"
 #endif
-//#include "driver/rtc_io.h"
 #include "esp_chip_info.h"
 #include "esp_intr_alloc.h"
 
