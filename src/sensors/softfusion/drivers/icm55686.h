@@ -27,9 +27,9 @@
 #include <array>
 #include <cstdint>
 
-#include "vqf.h"
 #include "../../../sensorinterface/RegisterInterface.h"
 #include "callbacks.h"
+#include "vqf.h"
 
 namespace SlimeVR::Sensors::SoftFusion::Drivers {
 
@@ -64,7 +64,8 @@ struct ICM55686 {
 	RegisterInterface& m_RegisterInterface;
 	SlimeVR::Logging::Logger& m_Logger;
 	ICM55686(RegisterInterface& registerInterface, SlimeVR::Logging::Logger& logger)
-		: m_RegisterInterface{registerInterface}, m_Logger{logger} {}
+		: m_RegisterInterface{registerInterface}
+		, m_Logger{logger} {}
 
 	struct Regs {
 		static constexpr uint8_t TempData = 0x0c;
@@ -111,7 +112,8 @@ struct ICM55686 {
 		struct PwrMgmt0 {
 			static constexpr uint8_t reg = 0x14;
 			static constexpr uint8_t value
-				= (0b11 << 0) | (0b11 << 2);  // accel in low noise mode, gyro in low noise
+				= (0b11 << 0)
+				| (0b11 << 2);  // accel in low noise mode, gyro in low noise
 		};
 
 		struct IOCPADScenarioOvrd {
@@ -129,125 +131,114 @@ struct ICM55686 {
 	};
 
 #pragma pack(push, 1)
-		struct FifoEntryAligned {
-			uint16_t accel[3];
-			uint16_t gyro[3];
-			uint16_t temp;
-			uint16_t timestamp;
-			uint8_t lsb[3];
-		};
+	struct FifoEntryAligned {
+		uint16_t accel[3];
+		uint16_t gyro[3];
+		uint16_t temp;
+		uint16_t timestamp;
+		uint8_t lsb[3];
+	};
 #pragma pack(pop)
 
-		static constexpr size_t FullFifoEntrySize = sizeof(FifoEntryAligned) + 1;
-		static_assert(FullFifoEntrySize == 20);
+	static constexpr size_t FullFifoEntrySize = sizeof(FifoEntryAligned) + 1;
+	static_assert(FullFifoEntrySize == 20);
 
-		bool initialize() {
-			m_RegisterInterface.writeReg(
-				Regs::DeviceConfig::reg,
-				Regs::DeviceConfig::valueSwReset
-			);
+	bool initialize() {
+		m_RegisterInterface.writeReg(
+			Regs::DeviceConfig::reg,
+			Regs::DeviceConfig::valueSwReset
+		);
 
-			delay(35);
+		delay(35);
 
 #if IMU_USE_EXTERNAL_CLOCK
-					m_RegisterInterface.writeReg(Regs::IOCPADScenarioOvrd::reg, Regs::IOCPADScenarioOvrd::value);
-					m_RegisterInterface.writeReg(Regs::RtcConfig::reg, Regs::RtcConfig::value);
+		m_RegisterInterface.writeReg(
+			Regs::IOCPADScenarioOvrd::reg,
+			Regs::IOCPADScenarioOvrd::value
+		);
+		m_RegisterInterface.writeReg(Regs::RtcConfig::reg, Regs::RtcConfig::value);
 #endif
 
-			m_RegisterInterface.writeReg(
-				Regs::GyroConfig::reg,
-				Regs::GyroConfig::value
-			);
-			m_RegisterInterface.writeReg(
-				Regs::AccelConfig::reg,
-				Regs::AccelConfig::value
-			);
-			m_RegisterInterface.writeReg(
-				Regs::FifoConfig0::reg,
-				Regs::FifoConfig0::value
-			);
-			m_RegisterInterface.writeReg(
-				Regs::FifoConfig3::reg,
-				Regs::FifoConfig3::value
-			);
-			m_RegisterInterface.writeReg(
-				Regs::PwrMgmt0::reg,
-				Regs::PwrMgmt0::value
-			);
+		m_RegisterInterface.writeReg(Regs::GyroConfig::reg, Regs::GyroConfig::value);
+		m_RegisterInterface.writeReg(Regs::AccelConfig::reg, Regs::AccelConfig::value);
+		m_RegisterInterface.writeReg(Regs::FifoConfig0::reg, Regs::FifoConfig0::value);
+		m_RegisterInterface.writeReg(Regs::FifoConfig3::reg, Regs::FifoConfig3::value);
+		m_RegisterInterface.writeReg(Regs::PwrMgmt0::reg, Regs::PwrMgmt0::value);
 
-			read_buffer.resize(FullFifoEntrySize * MaxReadings);
+		read_buffer.resize(FullFifoEntrySize * MaxReadings);
 
-			delay(1);
+		delay(1);
 
-			return true;
-		}
+		return true;
+	}
 
-		static constexpr size_t MaxReadings = 8;
-		// Allocate on heap so that it does not take up stack space, which can result in
-		// stack overflow and panic
-		std::vector<uint8_t> read_buffer;
+	static constexpr size_t MaxReadings = 8;
+	// Allocate on heap so that it does not take up stack space, which can result in
+	// stack overflow and panic
+	std::vector<uint8_t> read_buffer;
 
-		bool bulkRead(DriverCallbacks<int32_t>&& callbacks) {
-			constexpr auto InvalidReading = static_cast<int16_t>(0x8000);
+	bool bulkRead(DriverCallbacks<int32_t>&& callbacks) {
+		constexpr auto InvalidReading = static_cast<int16_t>(0x8000);
 
-			size_t fifo_packets = __builtin_bswap16(m_RegisterInterface.readReg16(Regs::FifoCount));
-			auto packets_to_read = std::min(fifo_packets, MaxReadings);
+		size_t fifo_packets
+			= __builtin_bswap16(m_RegisterInterface.readReg16(Regs::FifoCount));
+		auto packets_to_read = std::min(fifo_packets, MaxReadings);
 
-			size_t bytes_to_read = packets_to_read * FullFifoEntrySize;
-			m_RegisterInterface
-				.readBytes(Regs::FifoData, bytes_to_read, read_buffer.data());
+		size_t bytes_to_read = packets_to_read * FullFifoEntrySize;
+		m_RegisterInterface
+			.readBytes(Regs::FifoData, bytes_to_read, read_buffer.data());
 
-			for (auto i = 0u; i < bytes_to_read; i += FullFifoEntrySize) {
-				uint8_t header = read_buffer[i];
-				bool has_gyro = header & (1 << 5);
-				bool has_accel = header & (1 << 6);
+		for (auto i = 0u; i < bytes_to_read; i += FullFifoEntrySize) {
+			uint8_t header = read_buffer[i];
+			bool has_gyro = header & (1 << 5);
+			bool has_accel = header & (1 << 6);
 
-				FifoEntryAligned entry;
-				memcpy(
-					&entry,
-					&read_buffer[i + 0x1],
-					sizeof(FifoEntryAligned)
-				);  // skip fifo header
+			FifoEntryAligned entry;
+			memcpy(
+				&entry,
+				&read_buffer[i + 0x1],
+				sizeof(FifoEntryAligned)
+			);  // skip fifo header
 
-				int16_t gyro[3] = {
-					static_cast<int16_t>(__builtin_bswap16(entry.gyro[0])),
-					static_cast<int16_t>(__builtin_bswap16(entry.gyro[1])),
-					static_cast<int16_t>(__builtin_bswap16(entry.gyro[2])),
+			int16_t gyro[3] = {
+				static_cast<int16_t>(__builtin_bswap16(entry.gyro[0])),
+				static_cast<int16_t>(__builtin_bswap16(entry.gyro[1])),
+				static_cast<int16_t>(__builtin_bswap16(entry.gyro[2])),
+			};
+			if (has_gyro && gyro[0] != InvalidReading) {
+				const int32_t gyroData[3]{
+					static_cast<int32_t>(gyro[0]) << 4 | (entry.lsb[0] & 0xf),
+					static_cast<int32_t>(gyro[1]) << 4 | (entry.lsb[1] & 0xf),
+					static_cast<int32_t>(gyro[2]) << 4 | (entry.lsb[2] & 0xf),
 				};
-				if (has_gyro && gyro[0] != InvalidReading) {
-					const int32_t gyroData[3]{
-						static_cast<int32_t>(gyro[0]) << 4 | (entry.lsb[0] & 0xf),
-						static_cast<int32_t>(gyro[1]) << 4 | (entry.lsb[1] & 0xf),
-						static_cast<int32_t>(gyro[2]) << 4 | (entry.lsb[2] & 0xf),
-					};
-					callbacks.processGyroSample(gyroData, GyrTs);
-				}
-
-				int16_t accel[3] = {
-					static_cast<int16_t>(__builtin_bswap16(entry.accel[0])),
-					static_cast<int16_t>(__builtin_bswap16(entry.accel[1])),
-					static_cast<int16_t>(__builtin_bswap16(entry.accel[2])),
-				};
-				if (has_accel && accel[0] != InvalidReading) {
-					const int32_t accelData[3]{
-						static_cast<int32_t>(accel[0]) << 4
-							| (static_cast<int32_t>((entry.lsb[0]) & 0xf0) >> 4),
-						static_cast<int32_t>(accel[1]) << 4
-							| (static_cast<int32_t>((entry.lsb[1]) & 0xf0) >> 4),
-						static_cast<int32_t>(accel[2]) << 4
-							| (static_cast<int32_t>((entry.lsb[2]) & 0xf0) >> 4),
-					};
-					callbacks.processAccelSample(accelData, AccTs);
-				}
-
-				auto temp = static_cast<int16_t>(__builtin_bswap16(entry.temp));
-				if (temp != InvalidReading) {
-					callbacks.processTempSample(temp, TempTs);
-				}
+				callbacks.processGyroSample(gyroData, GyrTs);
 			}
 
-			return fifo_packets > MaxReadings;
+			int16_t accel[3] = {
+				static_cast<int16_t>(__builtin_bswap16(entry.accel[0])),
+				static_cast<int16_t>(__builtin_bswap16(entry.accel[1])),
+				static_cast<int16_t>(__builtin_bswap16(entry.accel[2])),
+			};
+			if (has_accel && accel[0] != InvalidReading) {
+				const int32_t accelData[3]{
+					static_cast<int32_t>(accel[0]) << 4
+						| (static_cast<int32_t>((entry.lsb[0]) & 0xf0) >> 4),
+					static_cast<int32_t>(accel[1]) << 4
+						| (static_cast<int32_t>((entry.lsb[1]) & 0xf0) >> 4),
+					static_cast<int32_t>(accel[2]) << 4
+						| (static_cast<int32_t>((entry.lsb[2]) & 0xf0) >> 4),
+				};
+				callbacks.processAccelSample(accelData, AccTs);
+			}
+
+			auto temp = static_cast<int16_t>(__builtin_bswap16(entry.temp));
+			if (temp != InvalidReading) {
+				callbacks.processTempSample(temp, TempTs);
+			}
 		}
+
+		return fifo_packets > MaxReadings;
+	}
 };
 
 }  // namespace SlimeVR::Sensors::SoftFusion::Drivers
