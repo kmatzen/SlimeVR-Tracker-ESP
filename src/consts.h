@@ -101,6 +101,63 @@ enum class SensorTypeID : uint8_t {
 #define BOARD_SLIMEVR_BUTTERFLY 26
 #define BOARD_DEV_RESERVED 250  // Reserved, should not be used in any release firmware
 
+// Returns the BOARD define name (e.g. "BOARD_WEMOSD1MINI").
+// Kept Arduino-independent because this header is used outside Arduino units.
+inline const char* boardName() {
+	switch (BOARD) {
+		case BOARD_SLIMEVR_LEGACY:
+			return "BOARD_SLIMEVR_LEGACY";
+		case BOARD_SLIMEVR_DEV:
+			return "BOARD_SLIMEVR_DEV";
+		case BOARD_NODEMCU:
+			return "BOARD_NODEMCU";
+		case BOARD_CUSTOM:
+			return "BOARD_CUSTOM";
+		case BOARD_WROOM32:
+			return "BOARD_WROOM32";
+		case BOARD_WEMOSD1MINI:
+			return "BOARD_WEMOSD1MINI";
+		case BOARD_TTGO_TBASE:
+			return "BOARD_TTGO_TBASE";
+		case BOARD_ESP01:
+			return "BOARD_ESP01";
+		case BOARD_SLIMEVR:
+			return "BOARD_SLIMEVR";
+		case BOARD_LOLIN_C3_MINI:
+			return "BOARD_LOLIN_C3_MINI";
+		case BOARD_BEETLE32C3:
+			return "BOARD_BEETLE32C3";
+		case BOARD_ESP32C3DEVKITM1:
+			return "BOARD_ESP32C3DEVKITM1";
+		case BOARD_OWOTRACK:
+			return "BOARD_OWOTRACK";
+		case BOARD_WRANGLER:
+			return "BOARD_WRANGLER";
+		case BOARD_MOCOPI:
+			return "BOARD_MOCOPI";
+		case BOARD_WEMOSWROOM02:
+			return "BOARD_WEMOSWROOM02";
+		case BOARD_XIAO_ESP32C3:
+			return "BOARD_XIAO_ESP32C3";
+		case BOARD_HARITORA:
+			return "BOARD_HARITORA";
+		case BOARD_ESP32C6DEVKITC1:
+			return "BOARD_ESP32C6DEVKITC1";
+		case BOARD_GLOVE_IMU_SLIMEVR_DEV:
+			return "BOARD_GLOVE_IMU_SLIMEVR_DEV";
+		case BOARD_GESTURES:
+			return "BOARD_GESTURES";
+		case BOARD_SLIMEVR_V1_2:
+			return "BOARD_SLIMEVR_V1_2";
+		case BOARD_ESP32S3_SUPERMINI:
+			return "BOARD_ESP32S3_SUPERMINI";
+		case BOARD_DEV_RESERVED:
+			return "BOARD_DEV_RESERVED";
+		default:
+			return "BOARD_UNKNOWN";
+	}
+}
+
 #define BAT_EXTERNAL 1
 #define BAT_INTERNAL 2
 #define BAT_MCP3021 3

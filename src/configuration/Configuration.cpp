@@ -38,10 +38,30 @@
 #define DIR_TOGGLES_OLD "/toggles"
 #define DIR_TOGGLES "/sensortoggles"
 
+// Global variable defined at file scope (not in namespace) so init.h can access it
+extern bool g_safeModeDeferredFactoryResetRequested;
+
 namespace SlimeVR::Configuration {
 void Configuration::setup() {
 	if (m_Loaded) {
 		return;
+	}
+
+	// Safe mode defers LittleFS formatting to normal runtime for reliability.
+	// If requested, perform the filesystem format before config load.
+	if (g_safeModeDeferredFactoryResetRequested) {
+		m_Logger.warn("Deferred safe-mode factory reset detected, formatting LittleFS");
+		g_safeModeDeferredFactoryResetRequested = false;
+
+		LittleFS.begin();
+		if (!LittleFS.format()) {
+			m_Logger.error("Deferred LittleFS format failed");
+		} else {
+			m_Logger.info("Deferred LittleFS format OK");
+			m_Logger.warn("Rebooting after deferred safe-mode factory reset");
+			ESP.restart();
+			return;
+		}
 	}
 
 	bool status = LittleFS.begin();
