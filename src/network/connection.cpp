@@ -659,135 +659,137 @@ void Connection::update() {
 		return;
 	}
 
-	int packetSize = m_UDP.parsePacket();
-	if (!packetSize) {
-		return;
-	}
+	while(true) {
+		int packetSize = m_UDP.parsePacket();
+		if (!packetSize) {
+			return;
+		}
 
-	int len = m_UDP.read(m_Packet, sizeof(m_Packet));
+		int len = m_UDP.read(m_Packet, sizeof(m_Packet));
 
-#ifdef DEBUG_NETWORK
-	m_Logger.trace(
-		"Received %d bytes from %s, port %d",
-		packetSize,
-		m_UDP.remoteIP().toString().c_str(),
-		m_UDP.remotePort()
-	);
-	m_Logger.traceArray("UDP packet contents: ", m_Packet, len);
-#else
-	(void)packetSize;
-#endif
+	#ifdef DEBUG_NETWORK
+		m_Logger.trace(
+			"Received %d bytes from %s, port %d",
+			packetSize,
+			m_UDP.remoteIP().toString().c_str(),
+			m_UDP.remotePort()
+		);
+		m_Logger.traceArray("UDP packet contents: ", m_Packet, len);
+	#else
+		(void)packetSize;
+	#endif
 
-	if (static_cast<ReceivePacketType>(m_Packet[3]) == ReceivePacketType::Handshake) {
-		m_Logger.warn("Handshake received again, ignoring");
-		return;
-	}
+		if (static_cast<ReceivePacketType>(m_Packet[3]) == ReceivePacketType::Handshake) {
+			m_Logger.warn("Handshake received again, ignoring");
+			return;
+		}
 
-	m_LastPacketTimestamp = millis();
-	switch (static_cast<ReceivePacketType>(m_Packet[3])) {
-		case ReceivePacketType::HeartBeat:
-			sendHeartbeat();
-			break;
-
-		case ReceivePacketType::Vibrate:
-			break;
-
-		case ReceivePacketType::Handshake:
-			// handled above
-			break;
-
-		case ReceivePacketType::Command:
-			break;
-
-		case ReceivePacketType::Config:
-			break;
-
-		case ReceivePacketType::PingPong:
-			returnLastPacket(len);
-			break;
-
-		case ReceivePacketType::SensorInfo: {
-			if (len < 6) {
-				m_Logger.warn("Wrong sensor info packet");
+		m_LastPacketTimestamp = millis();
+		switch (static_cast<ReceivePacketType>(m_Packet[3])) {
+			case ReceivePacketType::HeartBeat:
+				sendHeartbeat();
 				break;
-			}
 
-			SensorInfoPacket sensorInfoPacket;
-			memcpy(&sensorInfoPacket, m_Packet + 4, sizeof(sensorInfoPacket));
+			case ReceivePacketType::Vibrate:
+				break;
 
-			for (int i = 0; i < (int)sensors.size(); i++) {
-				if (sensorInfoPacket.sensorId == sensors[i]->getSensorId()) {
-					m_AckedSensorState[i] = sensorInfoPacket.sensorState;
-					if (len < 12) {
+			case ReceivePacketType::Handshake:
+				// handled above
+				break;
+
+			case ReceivePacketType::Command:
+				break;
+
+			case ReceivePacketType::Config:
+				break;
+
+			case ReceivePacketType::PingPong:
+				returnLastPacket(len);
+				break;
+
+			case ReceivePacketType::SensorInfo: {
+				if (len < 6) {
+					m_Logger.warn("Wrong sensor info packet");
+					break;
+				}
+
+				SensorInfoPacket sensorInfoPacket;
+				memcpy(&sensorInfoPacket, m_Packet + 4, sizeof(sensorInfoPacket));
+
+				for (int i = 0; i < (int)sensors.size(); i++) {
+					if (sensorInfoPacket.sensorId == sensors[i]->getSensorId()) {
+						m_AckedSensorState[i] = sensorInfoPacket.sensorState;
+						if (len < 12) {
+							m_AckedSensorCalibration[i]
+								= sensors[i]->hasCompletedRestCalibration();
+							m_AckedSensorConfigData[i] = sensors[i]->getSensorConfigData();
+							break;
+						}
 						m_AckedSensorCalibration[i]
-							= sensors[i]->hasCompletedRestCalibration();
-						m_AckedSensorConfigData[i] = sensors[i]->getSensorConfigData();
+							= sensorInfoPacket.hasCompletedRestCalibration;
 						break;
 					}
-					m_AckedSensorCalibration[i]
-						= sensorInfoPacket.hasCompletedRestCalibration;
+				}
+
+				break;
+			}
+			case ReceivePacketType::FeatureFlags: {
+				// Packet type (4) + Packet number (8) + flags (len - 12)
+				if (len < 13) {
+					m_Logger.warn("Invalid feature flags packet: too short");
 					break;
 				}
-			}
 
-			break;
-		}
-		case ReceivePacketType::FeatureFlags: {
-			// Packet type (4) + Packet number (8) + flags (len - 12)
-			if (len < 13) {
-				m_Logger.warn("Invalid feature flags packet: too short");
-				break;
-			}
+				bool hadFlags = m_ServerFeatures.isAvailable();
 
-			bool hadFlags = m_ServerFeatures.isAvailable();
+				uint32_t flagsLength = len - 12;
+				m_ServerFeatures = ServerFeatures::from(&m_Packet[12], flagsLength);
 
-			uint32_t flagsLength = len - 12;
-			m_ServerFeatures = ServerFeatures::from(&m_Packet[12], flagsLength);
-
-			if (!hadFlags) {
-#if PACKET_BUNDLING != PACKET_BUNDLING_DISABLED
-				if (m_ServerFeatures.has(ServerFeatures::PROTOCOL_BUNDLE_SUPPORT)) {
-					m_Logger.debug("Server supports packet bundling");
+				if (!hadFlags) {
+	#if PACKET_BUNDLING != PACKET_BUNDLING_DISABLED
+					if (m_ServerFeatures.has(ServerFeatures::PROTOCOL_BUNDLE_SUPPORT)) {
+						m_Logger.debug("Server supports packet bundling");
+					}
+	#endif
 				}
-#endif
-			}
 
-			break;
-		}
-
-		case ReceivePacketType::SetConfigFlag: {
-			// Packet type (4) + Packet number (8) + sensor_id(1) + flag_id (2) + state
-			// (1)
-			if (len < 16) {
-				m_Logger.warn("Invalid sensor config flag packet: too short");
 				break;
 			}
 
-			SetConfigFlagPacket setConfigFlagPacket;
-			memcpy(&setConfigFlagPacket, m_Packet + 12, sizeof(SetConfigFlagPacket));
+			case ReceivePacketType::SetConfigFlag: {
+				// Packet type (4) + Packet number (8) + sensor_id(1) + flag_id (2) + state
+				// (1)
+				if (len < 16) {
+					m_Logger.warn("Invalid sensor config flag packet: too short");
+					break;
+				}
 
-			uint8_t sensorId = setConfigFlagPacket.sensorId;
-			SensorToggles flag = setConfigFlagPacket.flag;
-			bool newState = setConfigFlagPacket.newState;
-			if (sensorId == UINT8_MAX) {
-				for (auto& sensor : sensors) {
+				SetConfigFlagPacket setConfigFlagPacket;
+				memcpy(&setConfigFlagPacket, m_Packet + 12, sizeof(SetConfigFlagPacket));
+
+				uint8_t sensorId = setConfigFlagPacket.sensorId;
+				SensorToggles flag = setConfigFlagPacket.flag;
+				bool newState = setConfigFlagPacket.newState;
+				if (sensorId == UINT8_MAX) {
+					for (auto& sensor : sensors) {
+						sensor->setFlag(flag, newState);
+					}
+				} else {
+					auto& sensors = sensorManager.getSensors();
+
+					if (sensorId >= sensors.size()) {
+						m_Logger.warn("Invalid sensor config flag packet: invalid sensor id"
+						);
+						break;
+					}
+
+					auto& sensor = sensors[sensorId];
 					sensor->setFlag(flag, newState);
 				}
-			} else {
-				auto& sensors = sensorManager.getSensors();
-
-				if (sensorId >= sensors.size()) {
-					m_Logger.warn("Invalid sensor config flag packet: invalid sensor id"
-					);
-					break;
-				}
-
-				auto& sensor = sensors[sensorId];
-				sensor->setFlag(flag, newState);
+				sendAcknowledgeConfigChange(sensorId, flag);
+				configuration.save();
+				break;
 			}
-			sendAcknowledgeConfigChange(sensorId, flag);
-			configuration.save();
-			break;
 		}
 	}
 }
