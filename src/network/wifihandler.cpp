@@ -28,6 +28,7 @@
 #include "esp_wifi.h"
 #include "esp_wifi_types.h"
 #endif
+#include "WiFiClient.h"
 
 namespace SlimeVR {
 
@@ -63,6 +64,9 @@ void WiFiNetwork::setWiFiCredentials(const char* SSID, const char* pass) {
 IPAddress WiFiNetwork::getAddress() { return WiFi.localIP(); }
 
 void WiFiNetwork::setUp() {
+	#if ESP8266
+		WiFiClient::setDefaultSync(true);
+	#endif
 	wifiHandlerLogger.info("Setting up WiFi");
 	WiFi.persistent(true);
 	WiFi.mode(WIFI_STA);
@@ -103,7 +107,6 @@ void WiFiNetwork::setUp() {
 	}
 #endif
 #endif
-	WiFi.setSync(true);
 }
 
 void WiFiNetwork::onConnected() {
