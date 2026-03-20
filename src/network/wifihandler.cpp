@@ -103,6 +103,7 @@ void WiFiNetwork::setUp() {
 	}
 #endif
 #endif
+	WiFi.setSync(true);
 }
 
 void WiFiNetwork::onConnected() {
