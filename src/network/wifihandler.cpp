@@ -64,9 +64,6 @@ void WiFiNetwork::setWiFiCredentials(const char* SSID, const char* pass) {
 IPAddress WiFiNetwork::getAddress() { return WiFi.localIP(); }
 
 void WiFiNetwork::setUp() {
-	#if ESP8266
-		WiFiClient::setDefaultSync(true);
-	#endif
 	wifiHandlerLogger.info("Setting up WiFi");
 	WiFi.persistent(true);
 	WiFi.mode(WIFI_STA);
