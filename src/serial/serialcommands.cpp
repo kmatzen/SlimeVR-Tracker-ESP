@@ -36,12 +36,12 @@
 #endif
 
 #ifdef EXT_SERIAL_COMMANDS
-#define CALLBACK_SIZE 7  // Increase callback size to allow for debug commands
+#define CALLBACK_SIZE 8  // Increase callback size to allow for debug commands
 #include "i2cscan.h"
 #endif
 
 #ifndef CALLBACK_SIZE
-#define CALLBACK_SIZE 6  // Default callback size
+#define CALLBACK_SIZE 7  // Default callback size
 #endif
 
 #if defined(VENDOR_URL) && defined(VENDOR_NAME) && defined(PRODUCT_NAME) \
@@ -458,6 +458,8 @@ void cmdScanI2C(CmdParser* parser) {
 }
 #endif
 
+void cmdNetTest(CmdParser* parser) { networkConnection.startNetTest(); }
+
 void setUp() {
 	cmdCallbacks.addCmd("SET", &cmdSet);
 	cmdCallbacks.addCmd("GET", &cmdGet);
@@ -465,6 +467,7 @@ void setUp() {
 	cmdCallbacks.addCmd("REBOOT", &cmdReboot);
 	cmdCallbacks.addCmd("DELCAL", &cmdDeleteCalibration);
 	cmdCallbacks.addCmd("TCAL", &cmdTemperatureCalibration);
+	cmdCallbacks.addCmd("NETTEST", &cmdNetTest);
 #if EXT_SERIAL_COMMANDS
 	cmdCallbacks.addCmd("SCANI2C", &cmdScanI2C);
 #endif

@@ -63,6 +63,8 @@ public:
 	void reset();
 	bool isConnected() const { return m_Connected; }
 
+	void startNetTest();
+
 	// PACKET_ACCEL 4
 	void sendSensorAcceleration(uint8_t sensorId, Vector3 vector);
 
@@ -240,6 +242,11 @@ private:
 	uint16_t m_BundlePacketInnerCount = 0;
 
 	unsigned char m_Buf[8];
+
+	bool m_NetTestRunning = false;
+	unsigned long m_NetTestStartTime = 0;
+	unsigned long m_NetTestLastSend = 0;
+	uint32_t m_NetTestPacketCount = 0;
 };
 
 }  // namespace SlimeVR::Network

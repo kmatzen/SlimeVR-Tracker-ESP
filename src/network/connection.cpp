@@ -637,6 +637,29 @@ void Connection::update() {
 	updateSensorState(sensors);
 	maybeRequestFeatureFlags();
 
+	if (m_NetTestRunning) {
+		unsigned long now = millis();
+		if (now - m_NetTestStartTime >= 60000) {
+			m_NetTestRunning = false;
+			m_Logger.info("NETTEST done: %u packets sent in 60s", m_NetTestPacketCount);
+		} else if (now - m_NetTestLastSend >= 10) {
+			m_NetTestLastSend = now;
+			for (auto& sensor : sensors) {
+				if (!sensor->isWorking()) {
+					continue;
+				}
+				uint8_t id = sensor->getSensorId();
+				if (m_NetTestPacketCount % 2 == 0) {
+					Quat dummyQuat;
+					sendRotationData(id, &dummyQuat, DATA_TYPE_NORMAL, 0);
+				} else {
+					sendSensorAcceleration(id, Vector3(0, 0, 9.8f));
+				}
+			}
+			m_NetTestPacketCount++;
+		}
+	}
+
 	if (m_LastPacketTimestamp + TIMEOUT < millis()) {
 		statusManager.setStatus(SlimeVR::Status::SERVER_CONNECTING, true);
 
@@ -790,6 +813,22 @@ void Connection::update() {
 			break;
 		}
 	}
+}
+
+void Connection::startNetTest() {
+	if (m_NetTestRunning) {
+		m_Logger.info("NETTEST already running");
+		return;
+	}
+	if (!m_Connected) {
+		m_Logger.error("NETTEST ERROR: Not connected to server");
+		return;
+	}
+	m_NetTestRunning = true;
+	m_NetTestStartTime = millis();
+	m_NetTestLastSend = 0;
+	m_NetTestPacketCount = 0;
+	m_Logger.info("NETTEST started, sending 100 pkt/s for 60s");
 }
 
 }  // namespace SlimeVR::Network
