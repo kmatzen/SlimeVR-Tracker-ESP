@@ -68,7 +68,7 @@ void Sensor::sendData() {
 #if SEND_ACCELERATION
 		if (newAcceleration) {
 			newAcceleration = false;
-			networkConnection.sendSensorAcceleration(sensorId, acceleration);
+			// networkConnection.sendSensorAcceleration(sensorId, acceleration);
 		}
 #endif
 	}
