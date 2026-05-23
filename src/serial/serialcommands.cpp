@@ -30,6 +30,7 @@
 #include "batterymonitor.h"
 #include "logging/Logger.h"
 #include "utils.h"
+extern void failSafeProductInfo(Stream* Serial);
 
 #ifdef ESP32
 #include "nvs_flash.h"
@@ -275,43 +276,7 @@ void cmdGet(CmdParser* parser) {
 	}
 
 	if (parser->equalCmdParam(1, "CONFIG")) {
-		String str
-			= "BOARD=%d\n"
-			  "IMU=%d\n"
-			  "SECOND_IMU=%d\n"
-			  "IMU_ROTATION=%f\n"
-			  "SECOND_IMU_ROTATION=%f\n"
-			  "BATTERY_MONITOR=%d\n"
-			  "BATTERY_SHIELD_RESISTANCE=%d\n"
-			  "BATTERY_SHIELD_R1=%d\n"
-			  "BATTERY_SHIELD_R2=%d\n"
-			  "PIN_IMU_SDA=%d\n"
-			  "PIN_IMU_SCL=%d\n"
-			  "PIN_IMU_INT=%d\n"
-			  "PIN_IMU_INT_2=%d\n"
-			  "PIN_BATTERY_LEVEL=%d\n"
-			  "LED_PIN=%d\n"
-			  "LED_INVERTED=%d\n";
-
-		Serial.printf(
-			str.c_str(),
-			BOARD,
-			static_cast<int>(sensorManager.getSensorType(0)),
-			static_cast<int>(sensorManager.getSensorType(1)),
-			IMU_ROTATION,
-			SECOND_IMU_ROTATION,
-			BATTERY_MONITOR,
-			BATTERY_SHIELD_RESISTANCE,
-			BATTERY_SHIELD_R1,
-			BATTERY_SHIELD_R2,
-			PIN_IMU_SDA,
-			PIN_IMU_SCL,
-			PIN_IMU_INT,
-			PIN_IMU_INT_2,
-			PIN_BATTERY_LEVEL,
-			LED_PIN,
-			LED_INVERTED
-		);
+		failSafeProductInfo(&Serial);
 	}
 
 	if (parser->equalCmdParam(1, "TEST")) {
