@@ -55,7 +55,9 @@ void failSafeProductInfo(Stream* Serial) {
 	Serial->println(String(F("PROTOCOL_VERSION: ")) + String(PROTOCOL_VERSION));
 	Serial->println(String(F("FIRMWARE_VERSION: ")) + String(FIRMWARE_VERSION));
 	Serial->println(String(F("BATTERY_MONITOR: ")) + String(BATTERY_MONITOR));
-	Serial->println(String(F("BATTERY_SHIELD_RESISTANCE: ")) + String(BATTERY_SHIELD_RESISTANCE));
+	Serial->println(
+		String(F("BATTERY_SHIELD_RESISTANCE: ")) + String(BATTERY_SHIELD_RESISTANCE)
+	);
 	Serial->println(String(F("BATTERY_SHIELD_R1: ")) + String(BATTERY_SHIELD_R1));
 	Serial->println(String(F("BATTERY_SHIELD_R2: ")) + String(BATTERY_SHIELD_R2));
 	Serial->println(String(F("PIN_BATTERY_LEVEL: ")) + String(PIN_BATTERY_LEVEL));
