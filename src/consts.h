@@ -153,6 +153,12 @@ inline const char* boardName() {
 			return "BOARD_ESP32S3_SUPERMINI";
 		case BOARD_DEV_RESERVED:
 			return "BOARD_DEV_RESERVED";
+		case BOARD_GENERIC_NRF:
+			return "BOARD_GENERIC_NRF";
+		case BOARD_SLIMEVR_BUTTERFLY_DEV:
+			return "BOARD_SLIMEVR_BUTTERFLY_DEV";
+		case BOARD_SLIMEVR_BUTTERFLY:
+			return "BOARD_SLIMEVR_BUTTERFLY";
 		default:
 			return "BOARD_UNKNOWN";
 	}
