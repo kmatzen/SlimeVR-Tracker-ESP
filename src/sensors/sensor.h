@@ -149,6 +149,9 @@ protected:
 	mutable SlimeVR::Logging::Logger m_Logger;
 
 private:
+	void sendUncompressedData();
+	void sendCompressedData();
+
 	void printTemperatureCalibrationUnsupported();
 
 	bool restCalibrationComplete = false;

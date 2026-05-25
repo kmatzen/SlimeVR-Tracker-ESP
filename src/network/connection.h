@@ -92,6 +92,9 @@ public:
 	// PACKET_TEMPERATURE 20
 	void sendTemperature(uint8_t sensorId, float temperature);
 
+	// PACKET_ROTATION_AND_ACCELERATION 23
+	void sendRotationAndAcceleration(uint8_t sensorId, Quat * const quat, Vector3 accel);
+
 	// PACKET_FEATURE_FLAGS 22
 	void sendFeatureFlags();
 

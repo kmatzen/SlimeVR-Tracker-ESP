@@ -51,7 +51,7 @@ enum class SendPacketType : uint8_t {
 	Temperature = 20,
 	// UserAction = 21,
 	FeatureFlags = 22,
-	// RotationAcceleration = 23,
+	RotationAndAcceleration = 23,
 	AcknowledgeConfigChange = 24,
 	FlexData = 26,
 	// PositionData = 27,
@@ -171,6 +171,17 @@ struct SignalStrengthPacket {
 struct TemperaturePacket {
 	uint8_t sensorId{};
 	BigEndian<float> temperature;
+};
+
+struct RotationAndAccelerationPacket {
+	uint8_t sensorId{};
+	BigEndian<int16_t> qX{};
+	BigEndian<int16_t> qY{};
+	BigEndian<int16_t> qZ{};
+	BigEndian<int16_t> qW{};
+	BigEndian<int16_t> aX{};
+	BigEndian<int16_t> aY{};
+	BigEndian<int16_t> aZ{};
 };
 
 struct AcknowledgeConfigChangePacket {

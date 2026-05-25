@@ -26,6 +26,7 @@
 #include <string_view>
 
 #include "GlobalVars.h"
+#include "featureflags.h"
 #include "logging/Logger.h"
 #include "packets.h"
 
@@ -325,6 +326,31 @@ void Connection::sendTemperature(uint8_t sensorId, float temperature) {
 		TemperaturePacket{
 			.sensorId = sensorId,
 			.temperature = temperature,
+		}
+	));
+}
+
+// PACKET_ROTATION_AND_ACCELERATION 23
+void Connection::sendRotationAndAcceleration(uint8_t sensorId, Quat * const quat, Vector3 accel) {
+	MUST(m_Connected);
+	int16_t qX = 0x8000 * quat->x;
+	int16_t qY = 0x8000 * quat->y;
+	int16_t qZ = 0x8000 * quat->z;
+	int16_t qW = 0x8000 * quat->w;
+	int16_t aX = 0x80 * accel.x;
+	int16_t aY = 0x80 * accel.y;
+	int16_t aZ = 0x80 * accel.z;
+	MUST(sendPacket(
+		SendPacketType::RotationAndAcceleration,
+		RotationAndAccelerationPacket{
+			.sensorId = sensorId,
+			.qX = qX,
+			.qY = qY,
+			.qZ = qZ,
+			.qW = qW,
+			.aX = aX,
+			.aY = aY,
+			.aZ = aZ,
 		}
 	));
 }

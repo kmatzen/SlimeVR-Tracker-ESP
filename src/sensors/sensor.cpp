@@ -52,26 +52,45 @@ void Sensor::setFusedRotation(Quat r) {
 }
 
 void Sensor::sendData() {
-	if (newFusedRotation) {
-		newFusedRotation = false;
-		networkConnection.sendRotationData(
-			sensorId,
-			&fusedRotation,
-			DATA_TYPE_NORMAL,
-			calibrationAccuracy
-		);
+	if (!newFusedRotation) {
+		return;
+	}
+	newFusedRotation = false;
+
+	if (false) {
+		sendCompressedData();
+	} else {
+		sendUncompressedData();
+	}
+}
+
+void Sensor::sendUncompressedData() {
+	networkConnection.sendRotationData(
+		sensorId,
+		&fusedRotation,
+		DATA_TYPE_NORMAL,
+		calibrationAccuracy
+	);
 
 #ifdef DEBUG_SENSOR
-		m_Logger.trace("Quaternion: %f, %f, %f, %f", UNPACK_QUATERNION(fusedRotation));
+	m_Logger.trace("Quaternion: %f, %f, %f, %f", UNPACK_QUATERNION(fusedRotation));
 #endif
 
 #if SEND_ACCELERATION
-		if (newAcceleration) {
-			newAcceleration = false;
-			networkConnection.sendSensorAcceleration(sensorId, acceleration);
-		}
-#endif
+	if (newAcceleration) {
+		newAcceleration = false;
+		// networkConnection.sendSensorAcceleration(sensorId, acceleration);
 	}
+#endif
+}
+
+void Sensor::sendCompressedData() {
+	networkConnection.sendRotationAndAcceleration(
+		sensorId,
+		&fusedRotation,
+		acceleration
+	);
+	newAcceleration = false;
 }
 
 void Sensor::printTemperatureCalibrationUnsupported() {

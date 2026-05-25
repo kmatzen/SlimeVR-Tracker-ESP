@@ -37,13 +37,15 @@ public:
 	enum EServerFeatureFlags : uint32_t {
 		// Server can parse bundle packets: `PACKET_BUNDLE` = 100 (0x64).
 		PROTOCOL_BUNDLE_SUPPORT,
+		// Server can handle compact packets
+		PROTOCOL_BUNDLE_COMPACT_SUPPORT,
 
 		// Add new flags here
 
 		BITS_TOTAL,
 	};
 
-	bool has(EServerFeatureFlags flag) {
+	[[nodiscard]] bool has(EServerFeatureFlags flag) const {
 		uint32_t bit = static_cast<uint32_t>(flag);
 		return m_Available && (m_Flags[bit / 8] & (1 << (bit % 8)));
 	}
@@ -68,7 +70,7 @@ public:
 private:
 	bool m_Available = false;
 
-	uint8_t m_Flags[static_cast<uint32_t>(EServerFeatureFlags::BITS_TOTAL) / 8 + 1];
+	uint8_t m_Flags[static_cast<uint32_t>(EServerFeatureFlags::BITS_TOTAL) / 8 + 1] = {0};
 };
 
 class FirmwareFeatures {
