@@ -2,7 +2,10 @@ import json
 import os
 import sys
 import shutil
+import subprocess
+import importlib.util
 from enum import Enum
+from pathlib import Path
 from textwrap import dedent
 from typing import List
 import configparser
@@ -13,6 +16,10 @@ COLOR_GREEN = f'{COLOR_ESC}32m'
 COLOR_RED = f'{COLOR_ESC}31m'
 COLOR_CYAN = f'{COLOR_ESC}36m'
 COLOR_GRAY = f'{COLOR_ESC}30;1m'
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+BUILD_DIR = REPO_ROOT / "build"
+PLATFORMIO_BUILD_DIR = REPO_ROOT / ".pio" / "build"
 
 
 class DeviceConfiguration:
@@ -32,7 +39,7 @@ def get_matrix() -> List[DeviceConfiguration]:
     matrix: List[DeviceConfiguration] = []
 
     config = configparser.ConfigParser()
-    config.read("./platformio.ini")
+    config.read(REPO_ROOT / "platformio.ini")
     for section in config.sections():
         split = section.split(":")
         if len(split) != 2 or split[0] != 'env':
@@ -52,13 +59,40 @@ def get_matrix() -> List[DeviceConfiguration]:
 
 def prepare() -> None:
     print(f"🡢 {COLOR_CYAN}Preparation{COLOR_RESET}")
-    if os.path.exists("./build"):
+    if BUILD_DIR.exists():
         print(f"  🡢 {COLOR_GRAY}Removing existing build folder...{COLOR_RESET}")
-        shutil.rmtree("./build")
+        shutil.rmtree(BUILD_DIR)
     print(f"  🡢 {COLOR_GRAY}Creating build folder...{COLOR_RESET}")
-    os.mkdir("./build")
+    BUILD_DIR.mkdir()
 
     print(f"  🡢 {COLOR_GREEN}Success!{COLOR_RESET}")
+
+
+def resolve_platformio_command() -> List[str]:
+    override = os.environ.get("PLATFORMIO_CMD")
+    if override:
+        return [override]
+
+    for candidate in ("platformio", "pio"):
+        resolved = shutil.which(candidate)
+        if resolved:
+            return [resolved]
+
+    python_dir = Path(sys.executable).resolve().parent
+    scripts_dir = python_dir / ("Scripts" if os.name == "nt" else "bin")
+    for candidate in ("platformio", "pio"):
+        suffix = ".exe" if os.name == "nt" else ""
+        resolved = scripts_dir / f"{candidate}{suffix}"
+        if resolved.exists():
+            return [str(resolved)]
+
+    if importlib.util.find_spec("platformio") is not None:
+        return [sys.executable, "-m", "platformio"]
+
+    raise FileNotFoundError(
+        "PlatformIO was not found. Install it into the active Python environment "
+        "or set PLATFORMIO_CMD to the executable path."
+    )
 
 
 def build() -> int:
@@ -95,11 +129,25 @@ def build_for_device(device: DeviceConfiguration) -> bool:
 
     print(f"::group::Build {device}")
 
-    code = os.system(f"platformio run -e {device.board}")
+    try:
+        platformio_command = resolve_platformio_command()
+    except FileNotFoundError as error:
+        print(f"    🡢 {COLOR_RED}{error}{COLOR_RESET}")
+        print("::endgroup::")
+        return False
+
+    result = subprocess.run(
+        [*platformio_command, "run", "-e", device.board],
+        cwd=REPO_ROOT,
+        check=False,
+    )
+    code = result.returncode
 
     if code == 0:
-        shutil.copy(f".pio/build/{device.board}/firmware.bin",
-                    f"build/{device.filename()}")
+        shutil.copy(
+            PLATFORMIO_BUILD_DIR / device.board / "firmware.bin",
+            BUILD_DIR / device.filename(),
+        )
 
         print(f"    🡢 {COLOR_GREEN}Success!{COLOR_RESET}")
     else:
