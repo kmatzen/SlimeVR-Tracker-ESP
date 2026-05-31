@@ -195,7 +195,7 @@ void printState() {
 		wifiNetwork.getAddress().toString().c_str(),
 		WiFi.macAddress().c_str(),
 		statusManager.getStatus(),
-		static_cast<int>(wifiNetwork.getWiFiState())
+		wifiNetwork.getWiFiState()
 	);
 
 	logger.info("%s", FULL_VENDOR_STR);
@@ -290,7 +290,7 @@ void cmdGet(CmdParser* parser) {
 			wifiNetwork.getAddress().toString().c_str(),
 			WiFi.macAddress().c_str(),
 			statusManager.getStatus(),
-			static_cast<int>(wifiNetwork.getWiFiState())
+			wifiNetwork.getWiFiState()
 		);
 		auto& sensor0 = sensorManager.getSensors()[0];
 		sensor0->motionLoop();

@@ -306,7 +306,7 @@ void BNO080Sensor::motionLoop() {
 		}
 
 		m_Logger.error(
-			"Sensor %d doesn't respond. Last reset reason: %d",
+			"Sensor %d doesn't respond. Last reset reason:",
 			sensorId,
 			lastReset
 		);
