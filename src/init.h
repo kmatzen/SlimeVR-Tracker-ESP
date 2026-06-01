@@ -1,6 +1,6 @@
 /*
 	SlimeVR Code is placed under the MIT license
-	Copyright (c) 2021 Eiren Rain & SlimeVR contributors
+	Copyright (c) 2026 unlogisch04 & SlimeVR contributors
 
 	Permission is hereby granted, free of charge, to any person obtaining a copy
 	of this software and associated documentation files (the "Software"), to deal
@@ -44,7 +44,7 @@ typedef struct rtc_mem {
 bool g_safeModeDeferredFactoryResetRequested = false;
 
 void failSafeProductInfo(Stream* Serial) {
-	Serial->println(F("==== SLVR Product Info ===="));
+	Serial->println(F("==== SVR Product Info ===="));
 	Serial->println(String(F("PRODUCT_NAME: ")) + String(PRODUCT_NAME));
 	Serial->println(String(F("VENDOR_NAME: ")) + String(VENDOR_NAME));
 	Serial->println(String(F("VENDOR_URL: ")) + String(VENDOR_URL));
@@ -68,7 +68,7 @@ void failSafeProductInfo(Stream* Serial) {
 }
 
 void failSafeBootInfo(Stream* Serial, uint32_t resetreason, rtc_mem_t* rtcMem) {
-	Serial->println(F("\r\n==== SLVR Boot ===="));
+	Serial->println(F("\r\n==== SVR Boot ===="));
 	Serial->println(String(F("Reboot reason code: ")) + String(resetreason));
 	Serial->println(String(F("Core Version: ")) + String(ESP.getCoreVersion()));
 	Serial->println(String(F("SDK version: ")) + String(ESP.getSdkVersion()));
@@ -164,7 +164,7 @@ bool mainSave(Stream* Serial) {
 	String inputBuffer = "";
 
 	Serial->println();
-	Serial->println(F("=== SLVR Emergency Shell ==="));
+	Serial->println(F("=== SVR Emergency Shell ==="));
 	Serial->println(F("Safe mode command prompt. Type 'HELP' for available commands."));
 	cmdSafeModeHelp(Serial);
 
@@ -264,7 +264,7 @@ extern "C" void preinit(void) {
 	}
 	ESP.rtcUserMemoryWrite(33, (uint32_t*)&rtcMem, sizeof(struct rtc_mem));
 
-	Serial.println(F("=== SLVR Boot end ==="));
+	Serial.println(F("=== SVR Boot end ==="));
 	Serial.flush();
 	// Deinit UART for main code to reinitialize
 	Serial.end();
@@ -307,7 +307,7 @@ extern "C" void initVariant(void) {
 		}
 	}
 
-	Serial.println(F("=== SLVR Boot end ==="));
+	Serial.println(F("=== SVR Boot end ==="));
 	Serial.flush();
 }
 #endif
