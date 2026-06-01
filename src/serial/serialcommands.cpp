@@ -350,7 +350,15 @@ void cmdGet(CmdParser* parser) {
 		int scanRes = WiFi.scanComplete();
 		if (scanRes >= 0) {
 			logger.info("[WSCAN] Found %d networks:", scanRes);
-			logger.info("[WSCAN] %-2s  %-3s  %-4s  %-34s  %-10s  %s", "ID", "Len", "chan", "SSID", "RSSI", "Encryption");
+			logger.info(
+				"[WSCAN] %-2s  %-3s  %-4s  %-34s  %-10s  %s",
+				"ID",
+				"Len",
+				"chan",
+				"SSID",
+				"RSSI",
+				"Encryption"
+			);
 			for (int i = 0; i < scanRes; i++) {
 				char ssidField[35];
 				snprintf(ssidField, sizeof(ssidField), "'%s'", WiFi.SSID(i).c_str());
