@@ -23,10 +23,10 @@
 
 #include "SensorManager.h"
 
-#include "SensorBuilder.h"
-
 #include <array>
+
 #include "../debugging/Benchmark.h"
+#include "SensorBuilder.h"
 
 namespace SlimeVR::Sensors {
 

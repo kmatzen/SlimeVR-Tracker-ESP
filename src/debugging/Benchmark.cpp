@@ -1,11 +1,11 @@
 #include "Benchmark.h"
+
 #include <limits>
 
 namespace SlimeVR::Debugging {
 
-Benchmark::Benchmark(const char *name)
-	: name{name}
-{}
+Benchmark::Benchmark(const char* name)
+	: name{name} {}
 
 void Benchmark::before() {
 #if DEBUG_MEASURE_TIME_TAKEN
@@ -38,21 +38,23 @@ void Benchmark::printReport() {
 
 	auto timeSinceLastReport = millis() - lastReportMillis;
 	uint64_t average = totalTimeTakenMicros / measurementCount;
-	float timeTakenPercent = static_cast<float>(totalTimeTakenMicros) / 1000.0f / timeSinceLastReport * 100.0f;
-	m_Logger.info("%-24s | "
-			"avg: %5llu us | "
-			"min: %5llu us | "
-			"max: %5llu us | "
-			"time taken: %5llu ms or %5.2f%% of %lu ms | count: %u",
-			name,
-			average,
-			minTimeTakenMicros,
-			maxTimeTakenMicros,
-			totalTimeTakenMicros / 1000,
-			timeTakenPercent,
-			timeSinceLastReport,
-			measurementCount
-			);
+	float timeTakenPercent = static_cast<float>(totalTimeTakenMicros) / 1000.0f
+						   / timeSinceLastReport * 100.0f;
+	m_Logger.info(
+		"%-24s | "
+		"avg: %5llu us | "
+		"min: %5llu us | "
+		"max: %5llu us | "
+		"time taken: %5llu ms or %5.2f%% of %lu ms | count: %u",
+		name,
+		average,
+		minTimeTakenMicros,
+		maxTimeTakenMicros,
+		totalTimeTakenMicros / 1000,
+		timeTakenPercent,
+		timeSinceLastReport,
+		measurementCount
+	);
 
 	lastReportMillis = millis();
 #endif
@@ -67,4 +69,4 @@ void Benchmark::reset() {
 #endif
 }
 
-}
+}  // namespace SlimeVR::Debugging

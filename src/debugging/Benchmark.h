@@ -24,20 +24,22 @@
 #pragma once
 
 #include <Arduino.h>
+
+#include <cmath>
 #include <cstdint>
 #include <limits>
-#include <cmath>
+
 #include "../logging/Logger.h"
 
 namespace SlimeVR::Debugging {
 
 class Benchmark {
 public:
-	Benchmark(const char *name);
-	Benchmark(const Benchmark &other) = delete;
-	Benchmark(Benchmark &&other) = delete;
-	Benchmark &operator=(const Benchmark &other) = delete;
-	Benchmark &operator=(Benchmark &&other) = delete;
+	Benchmark(const char* name);
+	Benchmark(const Benchmark& other) = delete;
+	Benchmark(Benchmark&& other) = delete;
+	Benchmark& operator=(const Benchmark& other) = delete;
+	Benchmark& operator=(Benchmark&& other) = delete;
 
 	void before();
 	void after();
@@ -57,9 +59,9 @@ private:
 	uint64_t maxTimeTakenMicros = 0;
 	uint32_t measurementCount = 0;
 
-	const char *name;
+	const char* name;
 
 	SlimeVR::Logging::Logger m_Logger = SlimeVR::Logging::Logger("Benchmark");
 };
 
-}
+}  // namespace SlimeVR::Debugging
