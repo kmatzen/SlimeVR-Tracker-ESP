@@ -30,13 +30,7 @@
 
 namespace SlimeVR::Sensors {
 
-#if DEBUG_MEASURE_TIME_TAKEN
-#define SENSOR_BENCHMARK_TAKEN true
-#else
-#define SENSOR_BENCHMARK_TAKEN false
-#endif
-#define SENSOR_BENCHMARK_SIZE 2
-std::array<SlimeVR::Debugging::Benchmark, SENSOR_BENCHMARK_SIZE> sensorLoopBMs{
+std::array<SlimeVR::Debugging::Benchmark, 2> sensorLoopBMs{
 	SlimeVR::Debugging::Benchmark{"IMU1 Sensor loop"},
 	SlimeVR::Debugging::Benchmark{"IMU2 Sensor loop"}
 };
@@ -77,7 +71,7 @@ void SensorManager::update() {
 	bool allIMUGood = true;
 	size_t sensorId = 0;
 	for (auto& sensor : m_Sensors) {
-		if ((sensorId < SENSOR_BENCHMARK_SIZE) && SENSOR_BENCHMARK_TAKEN) {
+		if (sensorId < sensorLoopBMs.size()) {
 			sensorLoopBMs[sensorId].before();
 		}
 
@@ -91,7 +85,7 @@ void SensorManager::update() {
 			allIMUGood = false;
 		}
 
-		if ((sensorId < SENSOR_BENCHMARK_SIZE) && SENSOR_BENCHMARK_TAKEN) {
+		if (sensorId < sensorLoopBMs.size()) {
 			sensorLoopBMs[sensorId].after();
 		}
 		sensorId++;
