@@ -32,11 +32,14 @@ namespace SlimeVR::Logging {
 
 class SerialBuffer {
 public:
-	SerialBuffer();
 	void printf(const char* fmt, ...) __attribute__((format(printf, 2, 3)));
 	void tick();
+	void enableImmediateMode(bool enable = true);
+
+	static SerialBuffer& getInstance();
 
 private:
+	SerialBuffer();
 	static constexpr size_t BufferSize = 8192;
 	static constexpr size_t PerTickWriteSize = 128;
 	std::vector<char> buffer;
@@ -44,6 +47,9 @@ private:
 	size_t head = 0;
 	size_t tail = 0;
 	size_t count = 0;
+	bool immediateMode = false;
+
+	static SerialBuffer instance;
 
 	static_assert(sizeof(printfBuffer) < BufferSize);
 };

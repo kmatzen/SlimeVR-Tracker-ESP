@@ -8,9 +8,18 @@ namespace SlimeVR::Logging {
 
 SerialBuffer::SerialBuffer() { buffer.resize(BufferSize); }
 
+SerialBuffer& SerialBuffer::getInstance() { return instance; }
+
 void SerialBuffer::printf(const char* fmt, ...) {
 	va_list lst;
 	va_start(lst, fmt);
+
+	if (immediateMode) {
+		vprintf(fmt, lst);
+		va_end(lst);
+		return;
+	}
+
 	auto result = vsnprintf(printfBuffer, sizeof(printfBuffer), fmt, lst);
 	va_end(lst);
 	if (result < 0) {
@@ -64,5 +73,9 @@ void SerialBuffer::tick() {
 	}
 	count -= toWrite;
 }
+
+void SerialBuffer::enableImmediateMode(bool enable) { immediateMode = enable; }
+
+SerialBuffer SerialBuffer::instance;
 
 }  // namespace SlimeVR::Logging
