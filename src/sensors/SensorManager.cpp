@@ -23,10 +23,10 @@
 
 #include "SensorManager.h"
 
-#include "SensorBuilder.h"
-
 #include <array>
+
 #include "../debugging/Benchmark.h"
+#include "SensorBuilder.h"
 
 namespace SlimeVR::Sensors {
 
@@ -71,7 +71,9 @@ void SensorManager::update() {
 	bool allIMUGood = true;
 	size_t sensorId = 0;
 	for (auto& sensor : m_Sensors) {
-		sensorLoopBMs[sensorId].before();
+		if (sensorId < sensorLoopBMs.size()) {
+			sensorLoopBMs[sensorId].before();
+		}
 
 		if (sensor->isWorking()) {
 			if (sensor->m_hwInterface != nullptr) {
@@ -83,7 +85,9 @@ void SensorManager::update() {
 			allIMUGood = false;
 		}
 
-		sensorLoopBMs[sensorId].after();
+		if (sensorId < sensorLoopBMs.size()) {
+			sensorLoopBMs[sensorId].after();
+		}
 		sensorId++;
 	}
 

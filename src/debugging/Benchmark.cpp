@@ -1,12 +1,12 @@
 #include "Benchmark.h"
+
 #include <limits>
 #include "../debug.h"
 
 namespace SlimeVR::Debugging {
 
-Benchmark::Benchmark(const char *name)
-	: name{name}
-{}
+Benchmark::Benchmark(const char* name)
+	: name{name} {}
 
 void Benchmark::before() {
 #if DEBUG_MEASURE_TIME_TAKEN
@@ -99,4 +99,4 @@ SlimeVR::Logging::Logger Benchmark::logger("Benchmark");
 
 uint32_t Benchmark::totalLoops = 0;
 
-}
+}  // namespace SlimeVR::Debugging

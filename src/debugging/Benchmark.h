@@ -24,21 +24,23 @@
 #pragma once
 
 #include <Arduino.h>
+
+#include <cmath>
 #include <cstdint>
 #include <limits>
-#include <cmath>
 #include <vector>
+
 #include "../logging/Logger.h"
 
 namespace SlimeVR::Debugging {
 
 class Benchmark {
 public:
-	Benchmark(const char *name);
-	Benchmark(const Benchmark &other) = delete;
-	Benchmark(Benchmark &&other) = delete;
-	Benchmark &operator=(const Benchmark &other) = delete;
-	Benchmark &operator=(Benchmark &&other) = delete;
+	Benchmark(const char* name);
+	Benchmark(const Benchmark& other) = delete;
+	Benchmark(Benchmark&& other) = delete;
+	Benchmark& operator=(const Benchmark& other) = delete;
+	Benchmark& operator=(Benchmark&& other) = delete;
 
 	void before();
 	void after();
@@ -67,4 +69,4 @@ private:
 	static uint32_t totalLoops;
 };
 
-}
+}  // namespace SlimeVR::Debugging
