@@ -1,7 +1,10 @@
 #include "Benchmark.h"
 
-#include <limits>
 #include "../debug.h"
+
+#if DEBUG_MEASURE_TIME_TAKEN
+#include <limits>
+#endif
 
 namespace SlimeVR::Debugging {
 
