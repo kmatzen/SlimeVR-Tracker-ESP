@@ -23,18 +23,19 @@
 
 #pragma once
 
-#include <vector>
-#include <cmath>
 #include <Arduino.h>
+
+#include <cmath>
+#include <vector>
 
 namespace SlimeVR::Logging {
 
 class SerialBuffer {
 public:
 	SerialBuffer();
-	void printf(const char *fmt, ...)
-		__attribute__((format (printf, 2, 3)));
+	void printf(const char* fmt, ...) __attribute__((format(printf, 2, 3)));
 	void tick();
+
 private:
 	static constexpr size_t BufferSize = 8192;
 	static constexpr size_t PerTickWriteSize = 128;
@@ -47,4 +48,4 @@ private:
 	static_assert(sizeof(printfBuffer) < BufferSize);
 };
 
-}
+}  // namespace SlimeVR::Logging

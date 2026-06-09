@@ -71,8 +71,6 @@ void Logger::log(Level level, const char* format, va_list args) const {
 	serialBuffer.printf("[%-5s] [%s] %s\n", levelToString(level), buf, buffer);
 }
 
-void Logger::tick() {
-	serialBuffer.tick();
-}
+void Logger::tick() { serialBuffer.tick(); }
 
 }  // namespace SlimeVR::Logging

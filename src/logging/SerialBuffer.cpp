@@ -1,21 +1,20 @@
 #include "SerialBuffer.h"
+
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
 
 namespace SlimeVR::Logging {
 
-SerialBuffer::SerialBuffer() {
-	buffer.resize(BufferSize);
-}
+SerialBuffer::SerialBuffer() { buffer.resize(BufferSize); }
 
-void SerialBuffer::printf(const char *fmt, ...) {
+void SerialBuffer::printf(const char* fmt, ...) {
 	va_list lst;
 	va_start(lst, fmt);
 	auto result = vsnprintf(printfBuffer, sizeof(printfBuffer), fmt, lst);
 	va_end(lst);
 	if (result < 0) {
-		 return;
+		return;
 	}
 
 	auto written = static_cast<size_t>(result);
@@ -46,21 +45,24 @@ void SerialBuffer::tick() {
 		return;
 	}
 
-	size_t maxWrite = std::min(PerTickWriteSize, static_cast<size_t>(Serial.availableForWrite()));
+	size_t maxWrite
+		= std::min(PerTickWriteSize, static_cast<size_t>(Serial.availableForWrite()));
 	size_t toWrite = std::min(maxWrite, count);
 	size_t beforeEnd = BufferSize - head;
 	if (beforeEnd >= toWrite) {
 		Serial.printf("%.*s", static_cast<int>(toWrite), buffer.data() + head);
 		head = (head + toWrite) % BufferSize;
 	} else {
-		Serial.printf("%.*s%.*s",
+		Serial.printf(
+			"%.*s%.*s",
 			static_cast<int>(beforeEnd),
 			buffer.data() + head,
 			static_cast<int>(toWrite - beforeEnd),
-			buffer.data());
+			buffer.data()
+		);
 		head = toWrite - beforeEnd;
 	}
 	count -= toWrite;
 }
 
-}
+}  // namespace SlimeVR::Logging

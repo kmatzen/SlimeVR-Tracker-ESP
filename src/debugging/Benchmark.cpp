@@ -43,15 +43,17 @@ void Benchmark::tick() {
 	}
 
 	auto printStartMicros = micros();
-	for (auto *instance : benchmarkInstances) {
+	for (auto* instance : benchmarkInstances) {
 		instance->printReport();
 		instance->reset();
 	}
 	auto elapsedMicros = micros() - printStartMicros;
-	logger.info("Time total: %lu ms, loops: %u, report print time: %lu us",
-			timeSinceLastReport,
-			totalLoops,
-			elapsedMicros);
+	logger.info(
+		"Time total: %lu ms, loops: %u, report print time: %lu us",
+		timeSinceLastReport,
+		totalLoops,
+		elapsedMicros
+	);
 
 	lastReportMillis = millis();
 	totalLoops = 0;
@@ -66,22 +68,24 @@ void Benchmark::printReport() const {
 
 	auto timeSinceLastReport = millis() - lastReportMillis;
 	uint64_t average = totalTimeTakenMicros / measurementCount;
-	float timeTakenPercent = static_cast<float>(totalTimeTakenMicros) / 1000.0f / timeSinceLastReport * 100.0f;
+	float timeTakenPercent = static_cast<float>(totalTimeTakenMicros) / 1000.0f
+						   / timeSinceLastReport * 100.0f;
 
-	logger.info("%-24s | "
-			"avg: %5llu us | "
-			"min: %5llu us | "
-			"max: %5llu us | "
-			"time taken: %5llu ms or %5.2f%% of %lu ms | count: %u",
-			name,
-			average,
-			minTimeTakenMicros,
-			maxTimeTakenMicros,
-			totalTimeTakenMicros / 1000,
-			timeTakenPercent,
-			timeSinceLastReport,
-			measurementCount
-		);
+	logger.info(
+		"%-24s | "
+		"avg: %5llu us | "
+		"min: %5llu us | "
+		"max: %5llu us | "
+		"time taken: %5llu ms or %5.2f%% of %lu ms | count: %u",
+		name,
+		average,
+		minTimeTakenMicros,
+		maxTimeTakenMicros,
+		totalTimeTakenMicros / 1000,
+		timeTakenPercent,
+		timeSinceLastReport,
+		measurementCount
+	);
 #endif
 }
 
@@ -96,7 +100,7 @@ void Benchmark::reset() {
 
 uint32_t Benchmark::lastReportMillis = millis();
 
-std::vector<Benchmark *> Benchmark::benchmarkInstances{};
+std::vector<Benchmark*> Benchmark::benchmarkInstances{};
 
 SlimeVR::Logging::Logger Benchmark::logger("Benchmark");
 

@@ -61,11 +61,11 @@ private:
 	uint64_t maxTimeTakenMicros = 0;
 	uint32_t measurementCount = 0;
 
-	const char *name;
+	const char* name;
 	bool registered = false;
 
 	static SlimeVR::Logging::Logger logger;
-	static std::vector<Benchmark *> benchmarkInstances;
+	static std::vector<Benchmark*> benchmarkInstances;
 	static uint32_t totalLoops;
 };
 
