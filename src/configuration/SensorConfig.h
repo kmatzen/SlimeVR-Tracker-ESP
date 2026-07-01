@@ -161,6 +161,7 @@ struct ICM42688SensorConfig {
 };
 
 struct BNO0XXSensorConfig {
+	// the magEnabled Flag has been replaced by SensorToggles. It is no longer used.
 	bool magEnabled;
 
 	constexpr bool operator==(const BNO0XXSensorConfig& rhs) const = default;
