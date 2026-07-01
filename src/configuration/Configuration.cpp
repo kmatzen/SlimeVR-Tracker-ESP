@@ -173,7 +173,8 @@ bool Configuration::saveSensorConfig(size_t sensorId) {
 	File file = LittleFS.open(path, "w");
 	bool ret = true;
 	if (file.write((uint8_t*)&config, sizeof(config)) < sizeof(config)) {
-		m_Logger.error("Failed to save sensor config: %s SensorID: %zu", path, sensorId);
+		m_Logger
+			.error("Failed to save sensor config: %s SensorID: %zu", path, sensorId);
 		ret = false;
 	}
 	file.close();
@@ -190,8 +191,13 @@ bool Configuration::saveSensorToggle(size_t sensorId) {
 		File file = LittleFS.open(path, "w");
 		auto toggleValues = m_SensorToggles[sensorId].getValues();
 		bool ret = true;
-		if (file.write((uint8_t*)&toggleValues, sizeof(toggleValues)) < sizeof(toggleValues)) {
-			m_Logger.error("Failed to save sensor toggle state: %s SensorID: %zu", path, sensorId);
+		if (file.write((uint8_t*)&toggleValues, sizeof(toggleValues))
+			< sizeof(toggleValues)) {
+			m_Logger.error(
+				"Failed to save sensor toggle state: %s SensorID: %zu",
+				path,
+				sensorId
+			);
 			ret = false;
 		};
 		file.close();
@@ -206,51 +212,50 @@ bool Configuration::saveSensorToggle(size_t sensorId) {
 }
 
 void Configuration::save() {
-/*
-	for (size_t i = 0; i < m_Sensors.size(); i++) {
-		SensorConfig config = m_Sensors[i];
-		if (config.type == SensorConfigType::NONE) {
-			continue;
-		}
+	/*
+		for (size_t i = 0; i < m_Sensors.size(); i++) {
+			SensorConfig config = m_Sensors[i];
+			if (config.type == SensorConfigType::NONE) {
+				continue;
+			}
 
-		char path[17];
-		sprintf(path, DIR_CALIBRATIONS "/%zu", i);
+			char path[17];
+			sprintf(path, DIR_CALIBRATIONS "/%zu", i);
 
-		m_Logger.trace("Saving sensor config data for %d", i);
+			m_Logger.trace("Saving sensor config data for %d", i);
 
-		File file = LittleFS.open(path, "w");
-		file.write((uint8_t*)&config, sizeof(SensorConfig));
-		file.close();
-
-		if (i < m_SensorToggles.size()) {
-			sprintf(path, DIR_TOGGLES "/%zu", i);
-
-			m_Logger.trace("Saving sensor toggle state for %d", i);
-
-			file = LittleFS.open(path, "w");
-			auto toggleValues = m_SensorToggles[i].getValues();
-			file.write((uint8_t*)&toggleValues, sizeof(SensorToggleValues));
+			File file = LittleFS.open(path, "w");
+			file.write((uint8_t*)&config, sizeof(SensorConfig));
 			file.close();
-		} else {
-			m_Logger.trace(
-				"Skipping saving toggles for sensor %d, no toggles present",
-				i
-			);
-		}
-	}
-*/
 
-/*
-	{
-		File file = LittleFS.open("/config.bin", "w");
-		file.write((uint8_t*)&m_Config, sizeof(DeviceConfig));
-		file.close();
-	}
-*/
+			if (i < m_SensorToggles.size()) {
+				sprintf(path, DIR_TOGGLES "/%zu", i);
+
+				m_Logger.trace("Saving sensor toggle state for %d", i);
+
+				file = LittleFS.open(path, "w");
+				auto toggleValues = m_SensorToggles[i].getValues();
+				file.write((uint8_t*)&toggleValues, sizeof(SensorToggleValues));
+				file.close();
+			} else {
+				m_Logger.trace(
+					"Skipping saving toggles for sensor %d, no toggles present",
+					i
+				);
+			}
+		}
+	*/
+
+	/*
+		{
+			File file = LittleFS.open("/config.bin", "w");
+			file.write((uint8_t*)&m_Config, sizeof(DeviceConfig));
+			file.close();
+		}
+	*/
 }
 
-void Configuration::cleanupMigration()
-{
+void Configuration::cleanupMigration() {
 	// Clean up old toggles directory
 	if (LittleFS.exists(DIR_TOGGLES_OLD)) {
 		char path[17] = DIR_TOGGLES_OLD;
@@ -293,7 +298,11 @@ SensorConfig Configuration::getSensor(size_t sensorId) const {
 	return m_Sensors.at(sensorId);
 }
 
-void Configuration::setSensor(size_t sensorId, const SensorConfig& config, bool nosave) {
+void Configuration::setSensor(
+	size_t sensorId,
+	const SensorConfig& config,
+	bool nosave
+) {
 	size_t currentSensors = m_Sensors.size();
 	m_Logger.trace("setSensor ID %d", sensorId);
 	if (sensorId >= currentSensors) {
@@ -301,7 +310,7 @@ void Configuration::setSensor(size_t sensorId, const SensorConfig& config, bool 
 	}
 	if ((m_Sensors[sensorId] != config) && !nosave) {
 		m_Logger.trace("setSensor ID %d, saving", sensorId);
-		m_SensorsChanged.resize(sensorId +1);
+		m_SensorsChanged.resize(sensorId + 1);
 		m_SensorsChanged[sensorId] = true;
 		saveNeeded = true;
 	}
@@ -316,16 +325,20 @@ SensorToggleState Configuration::getSensorToggles(size_t sensorId) const {
 	return m_SensorToggles.at(sensorId);
 }
 
-void Configuration::setSensorToggles(size_t sensorId, SensorToggleState state, bool nosave) {
+void Configuration::setSensorToggles(
+	size_t sensorId,
+	SensorToggleState state,
+	bool nosave
+) {
 	size_t currentSensors = m_SensorToggles.size();
 	m_Logger.trace("setSensorToggles ID %d", sensorId);
 	if (sensorId >= currentSensors) {
 		m_SensorToggles.resize(sensorId + 1);
 	}
 	if (sensorId >= m_SensorTogglesChanged.size()) {
-		m_SensorTogglesChanged.resize(sensorId +1);
+		m_SensorTogglesChanged.resize(sensorId + 1);
 	}
-	if ((m_SensorToggles[sensorId].getValues() != state.getValues()) && !nosave){
+	if ((m_SensorToggles[sensorId].getValues() != state.getValues()) && !nosave) {
 		m_Logger.trace("setSensorToggles ID %d, saving", sensorId);
 		m_SensorTogglesChanged[sensorId] = true;
 		saveNeeded = true;
@@ -720,9 +733,7 @@ void Configuration::print() {
 		}
 
 		if (i < m_SensorToggles.size()) {
-			m_Logger.info(
-				"      SensorToggles:"
-			);
+			m_Logger.info("      SensorToggles:");
 			m_Logger.info(
 				"             MagEnabled: %d",
 				m_SensorToggles[i].getToggle(SensorToggles::MagEnabled)
@@ -733,7 +744,9 @@ void Configuration::print() {
 			);
 			m_Logger.info(
 				" TempCalibrationEnabled: %d",
-				m_SensorToggles[i].getToggle(SensorToggles::TempGradientCalibrationEnabled)
+				m_SensorToggles[i].getToggle(
+					SensorToggles::TempGradientCalibrationEnabled
+				)
 			);
 		}
 	}
