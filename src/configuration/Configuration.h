@@ -49,7 +49,8 @@ public:
 	SensorConfig getSensor(size_t sensorId) const;
 	void setSensor(size_t sensorId, const SensorConfig& config, bool nosave = false);
 	SensorToggleState getSensorToggles(size_t sensorId) const;
-	void setSensorToggles(size_t sensorId, SensorToggleState state, bool nosave = false);
+	void
+	setSensorToggles(size_t sensorId, SensorToggleState state, bool nosave = false);
 	void eraseSensors();
 
 	bool loadTemperatureCalibration(
