@@ -643,7 +643,79 @@ void Configuration::print() {
 				m_Logger.info("            magEnabled: %d", c.data.bno0XX.magEnabled);
 
 				break;
+			case SensorConfigType::RUNTIME_CALIBRATION:
+				m_Logger.info(
+					"            A_Ts       : %f",
+					c.data.runtimeCalibration.A_Ts
+				);
+				m_Logger.info(
+					"            G_Ts       : %f",
+					c.data.runtimeCalibration.G_Ts
+				);
+				m_Logger.info(
+					"            M_Ts       : %f",
+					c.data.runtimeCalibration.M_Ts
+				);
+				m_Logger.info(
+					"            T_Ts       : %f",
+					c.data.runtimeCalibration.T_Ts
+				);
+
+				m_Logger.info(
+					"    TimestepsCalibrated: %d",
+					c.data.runtimeCalibration.sensorTimestepsCalibrated
+				);
+
+				m_Logger.info(
+					"        accelCalibrated: %d, %d, %d",
+					UNPACK_VECTOR_ARRAY(c.data.runtimeCalibration.accelCalibrated)
+				);
+				m_Logger.info(
+					"            A_off      : %f, %f, %f",
+					UNPACK_VECTOR_ARRAY(c.data.runtimeCalibration.A_off)
+				);
+
+				m_Logger.info(
+					"   gyroPointsCalibrated: %d",
+					c.data.runtimeCalibration.gyroPointsCalibrated
+				);
+
+				m_Logger.info(
+					"            G_OffTemp1 : %f",
+					c.data.runtimeCalibration.gyroMeasurementTemperature1
+				);
+				m_Logger.info(
+					"            G_off1     : %f, %f, %f",
+					UNPACK_VECTOR_ARRAY(c.data.runtimeCalibration.G_off1)
+				);
+
+				m_Logger.info(
+					"            G_OffTemp2 : %f",
+					c.data.runtimeCalibration.gyroMeasurementTemperature2
+				);
+				m_Logger.info(
+					"            G_off2     : %f, %f, %f",
+					UNPACK_VECTOR_ARRAY(c.data.runtimeCalibration.G_off2)
+				);
+
+				m_Logger.info(
+					"      MotionlessDataLen: %d",
+					c.data.runtimeCalibration.MotionlessDataLen
+				);
+
+				m_Logger.info("         MotionlessData:");
+				m_Logger.loghex(
+					SlimeVR::Logging::INFO,
+					c.data.runtimeCalibration.MotionlessData,
+					sizeof(c.data.runtimeCalibration.MotionlessData)
+				);
+
+				break;
 			default:
+				m_Logger.info(
+					"            Not defined to Print %s",
+					calibrationConfigTypeToString(c.type)
+				);
 				break;
 		}
 	}
