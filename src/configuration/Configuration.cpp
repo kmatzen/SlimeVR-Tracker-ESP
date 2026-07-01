@@ -718,6 +718,24 @@ void Configuration::print() {
 				);
 				break;
 		}
+
+		if (i < m_SensorToggles.size()) {
+			m_Logger.info(
+				"      SensorToggles:"
+			);
+			m_Logger.info(
+				"             MagEnabled: %d",
+				m_SensorToggles[i].getToggle(SensorToggles::MagEnabled)
+			);
+			m_Logger.info(
+				"     CalibrationEnabled: %d",
+				m_SensorToggles[i].getToggle(SensorToggles::CalibrationEnabled)
+			);
+			m_Logger.info(
+				" TempCalibrationEnabled: %d",
+				m_SensorToggles[i].getToggle(SensorToggles::TempGradientCalibrationEnabled)
+			);
+		}
 	}
 }
 }  // namespace SlimeVR::Configuration
