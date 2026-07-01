@@ -57,6 +57,7 @@ SlimeVR::Debugging::Benchmark ledManagerBM{"ledManager.update()"};
 SlimeVR::Debugging::Benchmark i2cScanBM{"I2CSCAN::update()"};
 SlimeVR::Debugging::Benchmark targetLooptimeBM{"TARGET_LOOPTIME_MICROS"};
 SlimeVR::Debugging::Benchmark printStateBM{"Serial printState()"};
+SlimeVR::Debugging::Benchmark configSaveBM{"configSave.tick()"};
 
 int sensorToCalibrate = -1;
 bool blinking = false;
@@ -202,6 +203,10 @@ void loop() {
 	i2cScanBM.before();
 	I2CSCAN::update();
 	i2cScanBM.after();
+
+	configSaveBM.before();
+	configuration.tick();
+	configSaveBM.after();
 
 #ifdef TARGET_LOOPTIME_MICROS
 	targetLooptimeBM.before();
