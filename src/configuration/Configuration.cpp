@@ -146,7 +146,7 @@ void Configuration::tick() {
 			}
 		}
 
-		// TODO handle tracker config
+		// Handle sensor config
 		if (m_ConfigChanged && !saved) {
 			File file = LittleFS.open("/config.bin", "w");
 			file.write((uint8_t*)&m_Config, sizeof(DeviceConfig));
@@ -279,8 +279,11 @@ void Configuration::reset() {
 	m_SensorTogglesChanged.clear();
 	m_Config.version = CURRENT_CONFIGURATION_VERSION;
 	m_ConfigChanged = true;
-	// Todo: save basic config
-	save();
+	// Todo:
+	// - we dont want to save the old tracker configuration. As it would defeat the purpus of the reset.
+	//   Also not clear if we realy need to save the basic configuration, till a command it changed again.
+	//   But this also means the the after a reset we need to restart a tracker to activate the
+	//   new configuration on the sensor. The sensorconfig is not cleared on the sensor
 	saveNeeded = true;
 
 	m_Logger.debug("Reset configuration");
@@ -347,12 +350,10 @@ void Configuration::setSensorToggles(
 }
 
 // eraseSensors()
-// What was this function intende for? m_Sensors.clear will erase the
-// m_Sensors config but not the one stored in the Sensor::
-// a restart of the tracker is needed to reset the configuration values in the end
-// the save at the end ... did not save any m_Sensors as it was cleared
-// TODO:
-// check if we should also remove sensorToggles from file
+// Removes the Configuration:
+// m_Sensors from Configuration, but it leaves a active copy on
+// the Sensors itself. To make a change after eraseSensors the trackern
+// needs to be rebooted. Only then the Sensors are reinitialized
 void Configuration::eraseSensors() {
 	m_Sensors.clear();
 	m_SensorsChanged.clear();
