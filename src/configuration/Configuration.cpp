@@ -211,50 +211,6 @@ bool Configuration::saveSensorToggle(size_t sensorId) {
 	}
 }
 
-void Configuration::save() {
-	/*
-		for (size_t i = 0; i < m_Sensors.size(); i++) {
-			SensorConfig config = m_Sensors[i];
-			if (config.type == SensorConfigType::NONE) {
-				continue;
-			}
-
-			char path[17];
-			sprintf(path, DIR_CALIBRATIONS "/%zu", i);
-
-			m_Logger.trace("Saving sensor config data for %d", i);
-
-			File file = LittleFS.open(path, "w");
-			file.write((uint8_t*)&config, sizeof(SensorConfig));
-			file.close();
-
-			if (i < m_SensorToggles.size()) {
-				sprintf(path, DIR_TOGGLES "/%zu", i);
-
-				m_Logger.trace("Saving sensor toggle state for %d", i);
-
-				file = LittleFS.open(path, "w");
-				auto toggleValues = m_SensorToggles[i].getValues();
-				file.write((uint8_t*)&toggleValues, sizeof(SensorToggleValues));
-				file.close();
-			} else {
-				m_Logger.trace(
-					"Skipping saving toggles for sensor %d, no toggles present",
-					i
-				);
-			}
-		}
-	*/
-
-	/*
-		{
-			File file = LittleFS.open("/config.bin", "w");
-			file.write((uint8_t*)&m_Config, sizeof(DeviceConfig));
-			file.close();
-		}
-	*/
-}
-
 void Configuration::cleanupMigration() {
 	// Clean up old toggles directory
 	if (LittleFS.exists(DIR_TOGGLES_OLD)) {

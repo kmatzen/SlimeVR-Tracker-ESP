@@ -799,7 +799,6 @@ void Connection::update() {
 				sensor->setFlag(flag, newState);
 			}
 			sendAcknowledgeConfigChange(sensorId, flag);
-			configuration.save();
 			break;
 		}
 	}

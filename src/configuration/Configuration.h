@@ -36,7 +36,6 @@ class Configuration {
 public:
 	void setup();
 
-	void save();
 	void reset();
 
 	void print();
