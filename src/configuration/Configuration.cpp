@@ -236,10 +236,11 @@ void Configuration::reset() {
 	m_Config.version = CURRENT_CONFIGURATION_VERSION;
 	m_ConfigChanged = true;
 	// Todo:
-	// - we dont want to save the old tracker configuration. As it would defeat the purpus of the reset.
-	//   Also not clear if we realy need to save the basic configuration, till a command it changed again.
-	//   But this also means the the after a reset we need to restart a tracker to activate the
-	//   new configuration on the sensor. The sensorconfig is not cleared on the sensor
+	// - we dont want to save the old tracker configuration. As it would defeat the
+	// purpus of the reset. Also not clear if we realy need to save the basic
+	// configuration, till a command it changed again. But this also means the the after
+	// a reset we need to restart a tracker to activate the new configuration on the
+	// sensor. The sensorconfig is not cleared on the sensor
 	saveNeeded = true;
 
 	m_Logger.debug("Reset configuration");
