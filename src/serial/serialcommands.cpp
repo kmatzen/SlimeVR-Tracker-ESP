@@ -25,6 +25,7 @@
 
 #include <CmdCallback.hpp>
 
+#include "../debugging/Benchmark.h"
 #include "GlobalVars.h"
 #include "base64.hpp"
 #include "batterymonitor.h"
@@ -157,6 +158,20 @@ void cmdSet(CmdParser* parser) {
 				}
 				wifiNetwork.setWiFiCredentials(ssid, ppass);
 				logger.info("CMD SET BWIFI OK: New wifi credentials set, reconnecting");
+			}
+		} else if (parser->equalCmdParam(1, "BENCHMARK")) {
+			if (parser->getParamCount() < 3) {
+				logger.error("CMD SET BENCHMARK ERROR: Too few arguments");
+				logger.info("Syntax: SET BENCHMARK ON/OFF");
+			} else if (parser->equalCmdParam(2, "ON")) {
+				SlimeVR::Debugging::Benchmark::enable();
+				logger.info("CMD SET BENCHMARK ON");
+			} else if (parser->equalCmdParam(2, "OFF")) {
+				SlimeVR::Debugging::Benchmark::disable();
+				logger.info("CMD SET BENCHMARK OFF");
+			} else {
+				logger.error("CMD SET BENCHMARK ERROR: Invalid argument");
+				logger.info("Syntax: SET BENCHMARK ON/OFF");
 			}
 		} else {
 			logger.error("CMD SET ERROR: Unrecognized variable to set");
@@ -369,6 +384,13 @@ void cmdGet(CmdParser* parser) {
 		if (WiFi.status() != WL_CONNECTED) {
 			WiFi.begin();
 		}
+	}
+
+	if (parser->equalCmdParam(1, "BENCHMARK")) {
+		logger.info(
+			"Benchmark is %s",
+			SlimeVR::Debugging::Benchmark::status() ? "enabled" : "disabled"
+		);
 	}
 }
 
