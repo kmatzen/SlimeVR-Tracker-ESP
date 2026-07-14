@@ -56,7 +56,7 @@ void Sensor::sendData() {
 		newFusedRotation = false;
 		networkConnection.sendRotationData(
 			sensorId,
-			&fusedRotation,
+			fusedRotation,
 			DATA_TYPE_NORMAL,
 			calibrationAccuracy
 		);

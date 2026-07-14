@@ -78,13 +78,10 @@ public:
 	// PACKET_ROTATION_DATA 17
 	void sendRotationData(
 		uint8_t sensorId,
-		Quat* const quaternion,
+		const Quat& quaternion,
 		uint8_t dataType,
 		uint8_t accuracyInfo
 	);
-
-	// PACKET_MAGNETOMETER_ACCURACY 18
-	void sendMagnetometerAccuracy(uint8_t sensorId, float accuracyInfo);
 
 	// PACKET_SIGNAL_STRENGTH 19
 	void sendSignalStrength(uint8_t signalStrength);
@@ -144,37 +141,53 @@ private:
 	bool beginPacket();
 	bool endPacket();
 
-	size_t write(const uint8_t* buffer, size_t size);
-	size_t write(uint8_t byte);
+	bool write(const uint8_t* buffer, size_t size);
+	bool write(uint8_t byte);
 
 	bool sendPacketType(SendPacketType type);
 	bool sendPacketNumber();
-	bool sendFloat(float f);
+
+	template <typename T>
+	uint8_t* convertToChars(T src, uint8_t* target) {
+		auto* rawBytes = reinterpret_cast<uint8_t*>(&src);
+		std::memcpy(target, rawBytes, sizeof(T));
+		std::reverse(target, target + sizeof(T));
+		return target;
+	}
+
+	template <typename T>
+	bool sendPrimitive(T value) {
+		static_assert(std::is_trivially_copyable_v<T>);
+
+		if constexpr (sizeof(T) == 1) {
+			return write(static_cast<uint8_t>(value));
+		}
+
+		uint8_t buffer[8];
+		convertToChars(value, buffer);
+		return write(buffer, sizeof(T));
+	}
 	bool sendByte(uint8_t c);
 	bool sendShort(uint16_t i);
 	bool sendInt(uint32_t i);
 	bool sendLong(uint64_t l);
-	bool sendBytes(const uint8_t* c, size_t length);
 	bool sendShortString(const char* str);
 	bool sendLongString(const char* str);
 
 	template <typename Packet>
 	bool sendPacket(
-		SendPacketType type,
 		Packet packet,
 		std::optional<uint64_t> packetNumberOverride = std::nullopt
 	) {
 		MUST_TRANSFER_BOOL(beginPacket());
-		MUST_TRANSFER_BOOL(sendPacketType(type));
+		MUST_TRANSFER_BOOL(sendPacketType(Packet::packetType));
 		if (packetNumberOverride) {
 			MUST_TRANSFER_BOOL(sendLong(*packetNumberOverride));
 		} else {
 			MUST_TRANSFER_BOOL(sendPacketNumber());
 		}
 
-		MUST_TRANSFER_BOOL(
-			sendBytes(reinterpret_cast<uint8_t*>(&packet), sizeof(Packet))
-		);
+		MUST_TRANSFER_BOOL(write(reinterpret_cast<uint8_t*>(&packet), sizeof(Packet)));
 
 		return endPacket();
 	}
@@ -197,8 +210,6 @@ private:
 
 		return endPacket();
 	}
-
-	int getWriteError();
 
 	void returnLastPacket(int len);
 

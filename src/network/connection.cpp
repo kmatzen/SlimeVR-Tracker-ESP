@@ -31,14 +31,6 @@
 
 #define TIMEOUT 3000UL
 
-template <typename T>
-uint8_t* convert_to_chars(T src, uint8_t* target) {
-	auto* rawBytes = reinterpret_cast<uint8_t*>(&src);
-	std::memcpy(target, rawBytes, sizeof(T));
-	std::reverse(target, target + sizeof(T));
-	return target;
-}
-
 namespace SlimeVR::Network {
 
 bool Connection::beginPacket() {
@@ -71,7 +63,7 @@ bool Connection::endPacket() {
 			sendPacketNumber();
 		}
 		sendShort(innerPacketSize);
-		sendBytes(m_Packet, innerPacketSize);
+		write(m_Packet, innerPacketSize);
 
 		m_BundlePacketInnerCount++;
 		m_IsBundle = true;
@@ -110,7 +102,7 @@ bool Connection::endBundle() {
 	return endPacket();
 }
 
-size_t Connection::write(const uint8_t* buffer, size_t size) {
+bool Connection::write(const uint8_t* buffer, size_t size) {
 	if (m_IsBundle) {
 		if (m_BundlePacketPosition + size > sizeof(m_Packet)) {
 			return 0;
@@ -119,40 +111,18 @@ size_t Connection::write(const uint8_t* buffer, size_t size) {
 		m_BundlePacketPosition += size;
 		return size;
 	}
-	return m_UDP.write(buffer, size);
+	return m_UDP.write(buffer, size) > 0;
 }
 
-size_t Connection::write(uint8_t byte) { return write(&byte, 1); }
+bool Connection::write(uint8_t byte) { return write(&byte, 1); }
 
-bool Connection::sendFloat(float f) {
-	convert_to_chars(f, m_Buf);
+bool Connection::sendByte(uint8_t c) { return sendPrimitive(c); }
 
-	return write(m_Buf, sizeof(f)) != 0;
-}
+bool Connection::sendShort(uint16_t i) { return sendPrimitive(i); }
 
-bool Connection::sendByte(uint8_t c) { return write(&c, 1) != 0; }
+bool Connection::sendInt(uint32_t i) { return sendPrimitive(i); }
 
-bool Connection::sendShort(uint16_t i) {
-	convert_to_chars(i, m_Buf);
-
-	return write(m_Buf, sizeof(i)) != 0;
-}
-
-bool Connection::sendInt(uint32_t i) {
-	convert_to_chars(i, m_Buf);
-
-	return write(m_Buf, sizeof(i)) != 0;
-}
-
-bool Connection::sendLong(uint64_t l) {
-	convert_to_chars(l, m_Buf);
-
-	return write(m_Buf, sizeof(l)) != 0;
-}
-
-bool Connection::sendBytes(const uint8_t* c, size_t length) {
-	return write(c, length) != 0;
-}
+bool Connection::sendLong(uint64_t l) { return sendPrimitive(l); }
 
 bool Connection::sendPacketNumber() {
 	if (m_IsBundle) {
@@ -171,7 +141,7 @@ bool Connection::sendShortString(const char* str) {
 
 	MUST_TRANSFER_BOOL(sendByte(static_cast<uint8_t>(size)));
 	if (size > 0) {
-		MUST_TRANSFER_BOOL(sendBytes((const uint8_t*)str, size));
+		MUST_TRANSFER_BOOL(write((const uint8_t*)str, size));
 	}
 
 	return true;
@@ -190,10 +160,8 @@ bool Connection::sendLongString(const char* str) {
 
 	MUST_TRANSFER_BOOL(sendInt(size));
 
-	return sendBytes((const uint8_t*)str, size);
+	return write((const uint8_t*)str, size);
 }
-
-int Connection::getWriteError() { return m_UDP.getWriteError(); }
 
 // PACKET_HEARTBEAT 0
 void Connection::sendHeartbeat() {
@@ -205,7 +173,6 @@ void Connection::sendHeartbeat() {
 void Connection::sendSensorAcceleration(uint8_t sensorId, Vector3 vector) {
 	MUST(m_Connected);
 	MUST(sendPacket(
-		SendPacketType::Accel,
 		AccelPacket{
 			.x = vector.x,
 			.y = vector.y,
@@ -219,7 +186,6 @@ void Connection::sendSensorAcceleration(uint8_t sensorId, Vector3 vector) {
 void Connection::sendBatteryLevel(float batteryVoltage, float batteryPercentage) {
 	MUST(m_Connected);
 	MUST(sendPacket(
-		SendPacketType::BatteryLevel,
 		BatteryLevelPacket{
 			.batteryVoltage = batteryVoltage,
 			.batteryPercentage = batteryPercentage,
@@ -231,7 +197,6 @@ void Connection::sendBatteryLevel(float batteryVoltage, float batteryPercentage)
 void Connection::sendSensorTap(uint8_t sensorId, uint8_t value) {
 	MUST(m_Connected);
 	MUST(sendPacket(
-		SendPacketType::Tap,
 		TapPacket{
 			.sensorId = sensorId,
 			.value = value,
@@ -243,7 +208,6 @@ void Connection::sendSensorTap(uint8_t sensorId, uint8_t value) {
 void Connection::sendSensorError(uint8_t sensorId, uint8_t error) {
 	MUST(m_Connected);
 	sendPacket(
-		SendPacketType::Error,
 		ErrorPacket{
 			.sensorId = sensorId,
 			.error = error,
@@ -255,7 +219,6 @@ void Connection::sendSensorError(uint8_t sensorId, uint8_t error) {
 void Connection::sendSensorInfo(Sensor& sensor) {
 	MUST(m_Connected);
 	MUST(sendPacket(
-		SendPacketType::SensorInfo,
 		SensorInfoPacket{
 			.sensorId = sensor.getSensorId(),
 			.sensorState = sensor.getSensorState(),
@@ -274,32 +237,19 @@ void Connection::sendSensorInfo(Sensor& sensor) {
 // PACKET_ROTATION_DATA 17
 void Connection::sendRotationData(
 	uint8_t sensorId,
-	Quat* const quaternion,
+	const Quat& quaternion,
 	uint8_t dataType,
 	uint8_t accuracyInfo
 ) {
 	MUST(m_Connected);
 	MUST(sendPacket(
-		SendPacketType::RotationData,
 		RotationDataPacket{
 			.sensorId = sensorId,
 			.dataType = dataType,
-			.x = quaternion->x,
-			.y = quaternion->y,
-			.z = quaternion->z,
-			.w = quaternion->w,
-			.accuracyInfo = accuracyInfo,
-		}
-	));
-}
-
-// PACKET_MAGNETOMETER_ACCURACY 18
-void Connection::sendMagnetometerAccuracy(uint8_t sensorId, float accuracyInfo) {
-	MUST(m_Connected);
-	MUST(sendPacket(
-		SendPacketType::MagnetometerAccuracy,
-		MagnetometerAccuracyPacket{
-			.sensorId = sensorId,
+			.x = quaternion.x,
+			.y = quaternion.y,
+			.z = quaternion.z,
+			.w = quaternion.w,
 			.accuracyInfo = accuracyInfo,
 		}
 	));
@@ -309,7 +259,6 @@ void Connection::sendMagnetometerAccuracy(uint8_t sensorId, float accuracyInfo) 
 void Connection::sendSignalStrength(uint8_t signalStrength) {
 	MUST(m_Connected);
 	MUST(sendPacket(
-		SendPacketType::SignalStrength,
 		SignalStrengthPacket{
 			.sensorId = 255,
 			.signalStrength = signalStrength,
@@ -321,7 +270,6 @@ void Connection::sendSignalStrength(uint8_t signalStrength) {
 void Connection::sendTemperature(uint8_t sensorId, float temperature) {
 	MUST(m_Connected);
 	MUST(sendPacket(
-		SendPacketType::Temperature,
 		TemperaturePacket{
 			.sensorId = sensorId,
 			.temperature = temperature,
@@ -345,7 +293,6 @@ void Connection::sendAcknowledgeConfigChange(
 ) {
 	MUST(m_Connected);
 	MUST(sendPacket(
-		SendPacketType::AcknowledgeConfigChange,
 		AcknowledgeConfigChangePacket{
 			.sensorId = sensorId,
 			.configType = configType,
@@ -365,7 +312,8 @@ void Connection::sendTrackerDiscovery() {
 			// This is kept for backwards compatibility,
 			// but the latest SlimeVR server will not initialize trackers
 			// with firmware build > 8 until it recieves a sensor info packet
-			MUST_TRANSFER_BOOL(sendInt(static_cast<int>(sensorManager.getSensorType(0)))
+			MUST_TRANSFER_BOOL(
+				sendInt(static_cast<int>(sensorManager.getSensorType(0)))
 			);
 			MUST_TRANSFER_BOOL(sendInt(HARDWARE_MCU));
 			// Backwards compatibility, unused IMU data
@@ -375,7 +323,7 @@ void Connection::sendTrackerDiscovery() {
 			MUST_TRANSFER_BOOL(sendInt(PROTOCOL_VERSION));
 			MUST_TRANSFER_BOOL(sendShortString(FIRMWARE_VERSION));
 			// MAC address string
-			MUST_TRANSFER_BOOL(sendBytes(mac, 6));
+			MUST_TRANSFER_BOOL(write(mac, 6));
 			// Tracker type to hint the server if it's a glove or normal tracker or
 			// something else
 			MUST_TRANSFER_BOOL(sendByte(static_cast<uint8_t>(TRACKER_TYPE)));
@@ -399,7 +347,6 @@ void Connection::sendTrackerDiscovery() {
 void Connection::sendFlexData(uint8_t sensorId, float flexLevel) {
 	MUST(m_Connected);
 	MUST(sendPacket(
-		SendPacketType::FlexData,
 		FlexDataPacket{
 			.sensorId = sensorId,
 			.flexLevel = flexLevel,
@@ -425,7 +372,6 @@ void Connection::sendInspectionRawIMUData(
 ) {
 	MUST(m_Connected);
 	MUST(sendPacket(
-		SendPacketType::Inspection,
 		IntRawImuDataInspectionPacket{
 			.inspectionPacketType = InspectionPacketType::RawImuData,
 			.sensorId = sensorId,
@@ -466,7 +412,6 @@ void Connection::sendInspectionRawIMUData(
 ) {
 	MUST(m_Connected);
 	MUST(sendPacket(
-		SendPacketType::Inspection,
 		FloatRawImuDataInspectionPacket{
 			.inspectionPacketType = InspectionPacketType::RawImuData,
 			.sensorId = sensorId,
@@ -496,7 +441,7 @@ void Connection::returnLastPacket(int len) {
 
 	MUST(beginPacket());
 
-	MUST(sendBytes(m_Packet, len));
+	MUST(write(m_Packet, len));
 
 	MUST(endPacket());
 }
@@ -777,7 +722,8 @@ void Connection::update() {
 				auto& sensors = sensorManager.getSensors();
 
 				if (sensorId >= sensors.size()) {
-					m_Logger.warn("Invalid sensor config flag packet: invalid sensor id"
+					m_Logger.warn(
+						"Invalid sensor config flag packet: invalid sensor id"
 					);
 					break;
 				}
