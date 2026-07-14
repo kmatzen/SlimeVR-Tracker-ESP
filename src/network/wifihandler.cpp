@@ -22,6 +22,8 @@
 */
 #include "network/wifihandler.h"
 
+#include <memory>
+
 #include "GlobalVars.h"
 #include "globals.h"
 #if !ESP8266
@@ -31,49 +33,39 @@
 
 namespace SlimeVR {
 
-void WiFiNetwork::reportWifiProgress() {
-	if (lastWifiReportTime + 1000 < millis()) {
-		lastWifiReportTime = millis();
-		Serial.print(".");
-	}
-}
-
-void WiFiNetwork::setStaticIPIfDefined() {
-#ifdef WIFI_USE_STATICIP
-	const IPAddress ip(WIFI_STATIC_IP);
-	const IPAddress gateway(WIFI_STATIC_GATEWAY);
-	const IPAddress subnet(WIFI_STATIC_SUBNET);
-	WiFi.config(ip, gateway, subnet);
-#endif
+void WiFiNetwork::transitionState(std::unique_ptr<WiFiState>&& newState) {
+	currentState = std::move(newState);
 }
 
 bool WiFiNetwork::isConnected() const {
-	return wifiState == WiFiReconnectionStatus::Success;
+	return getWiFiState() == WiFiReconnectionStatus::Success;
 }
 
 void WiFiNetwork::setWiFiCredentials(const char* SSID, const char* pass) {
 	wifiProvisioning.stopProvisioning();
-	tryConnecting(false, SSID, pass);
-	retriedOnG = false;
-	// Reset state, will get back into provisioning if can't connect
-	hadWifi = false;
-	wifiState = WiFiReconnectionStatus::ServerCredAttempt;
+	transitionState(
+		std::make_unique<ServerCredentialsAttemptState>(
+			*this,
+			std::string{SSID},
+			std::string{pass}
+		)
+	);
 }
 
 IPAddress WiFiNetwork::getAddress() { return WiFi.localIP(); }
 
 void WiFiNetwork::setUp() {
-	wifiHandlerLogger.info("Setting up WiFi");
+	logger.info("Setting up WiFi");
 	WiFi.persistent(true);
 	WiFi.mode(WIFI_STA);
 	WiFi.hostname("SlimeVR FBT Tracker");
-	wifiHandlerLogger.info(
+	logger.info(
 		"Loaded credentials for SSID '%s' and pass length %d",
 		getSSID().c_str(),
 		getPassword().length()
 	);
 
-	trySavedCredentials();
+	transitionState(std::make_unique<SavedCredentialsAttemptState>(*this));
 
 #if ESP8266
 #if POWERSAVING_MODE == POWER_SAVING_NONE
@@ -99,23 +91,10 @@ void WiFiNetwork::setUp() {
 		esp_wifi_set_config(WIFI_IF_STA, &conf);
 		WiFi.setSleep(WIFI_PS_MAX_MODEM);
 	} else {
-		wifiHandlerLogger.error("Unable to get WiFi config, power saving not enabled!");
+		logger.error("Unable to get WiFi config, power saving not enabled!");
 	}
 #endif
 #endif
-}
-
-void WiFiNetwork::onConnected() {
-	wifiState = WiFiReconnectionStatus::Success;
-	wifiProvisioning.stopProvisioning();
-	statusManager.setStatus(SlimeVR::Status::WIFI_CONNECTING, false);
-	hadWifi = true;
-	wifiHandlerLogger.info(
-		"Connected successfully to SSID '%s', IP address %s",
-		getSSID().c_str(),
-		WiFi.localIP().toString().c_str()
-	);
-	// Reset it, in case we just connected with server creds
 }
 
 String WiFiNetwork::getSSID() {
@@ -141,91 +120,14 @@ String WiFiNetwork::getPassword() {
 #endif
 }
 
-WiFiNetwork::WiFiReconnectionStatus WiFiNetwork::getWiFiState() { return wifiState; }
+WiFiNetwork::WiFiReconnectionStatus WiFiNetwork::getWiFiState() const {
+	return currentState->toStatus();
+}
 
 void WiFiNetwork::upkeep() {
 	wifiProvisioning.upkeepProvisioning();
 
-	if (WiFi.status() == WL_CONNECTED) {
-		if (!isConnected()) {
-			onConnected();
-			return;
-		}
-
-		if (millis() - lastRssiSample >= 2000) {
-			lastRssiSample = millis();
-			uint8_t signalStrength = WiFi.RSSI();
-			networkConnection.sendSignalStrength(signalStrength);
-		}
-		return;
-	}
-
-	if (isConnected()) {
-		statusManager.setStatus(SlimeVR::Status::WIFI_CONNECTING, true);
-		wifiHandlerLogger.warn("Connection to WiFi lost, reconnecting...");
-		trySavedCredentials();
-		return;
-	}
-
-	if (wifiState != WiFiReconnectionStatus::Failed) {
-		reportWifiProgress();
-	}
-
-	if (millis() - wifiConnectionTimeout
-			< static_cast<uint32_t>(WiFiTimeoutSeconds * 1000)
-		&& WiFi.status() == WL_DISCONNECTED) {
-		return;
-	}
-
-	switch (wifiState) {
-		case WiFiReconnectionStatus::NotSetup:  // Wasn't set up
-			return;
-		case WiFiReconnectionStatus::SavedAttempt:  // Couldn't connect with
-													// first set of
-													// credentials
-			if (!trySavedCredentials()) {
-				tryHardcodedCredentials();
-			}
-			return;
-		case WiFiReconnectionStatus::HardcodeAttempt:  // Couldn't connect with
-													   // second set of credentials
-			if (!tryHardcodedCredentials()) {
-				wifiState = WiFiReconnectionStatus::Failed;
-			}
-			return;
-		case WiFiReconnectionStatus::ServerCredAttempt:  // Couldn't connect with
-														 // server-sent credentials.
-			if (!tryServerCredentials()) {
-				wifiState = WiFiReconnectionStatus::Failed;
-			}
-			return;
-		case WiFiReconnectionStatus::Failed:  // Couldn't connect with second set of
-											  // credentials or server credentials
-// Return to the default PHY Mode N.
-#if ESP8266
-			if constexpr (USE_ATTENUATION) {
-				WiFi.setOutputPower(20.0 - ATTENUATION_N);
-			}
-			WiFi.setPhyMode(WIFI_PHY_MODE_11N);
-#endif
-			// Start smart config
-			if (!hadWifi && !WiFi.smartConfigDone()
-				&& millis() - wifiConnectionTimeout
-					   >= static_cast<uint32_t>(WiFiTimeoutSeconds * 1000)) {
-				if (WiFi.status() != WL_IDLE_STATUS) {
-					wifiHandlerLogger.error(
-						"Can't connect from any credentials, error: %d, reason: %s.",
-						static_cast<int>(statusToFailure(WiFi.status())),
-						statusToReasonString(WiFi.status())
-					);
-					wifiConnectionTimeout = millis();
-				}
-				wifiProvisioning.startProvisioning();
-			}
-			return;
-		default:
-			return;
-	}
+	currentState->tick();
 }
 
 const char* WiFiNetwork::statusToReasonString(wl_status_t status) {
@@ -268,96 +170,34 @@ WiFiNetwork::WiFiFailureReason WiFiNetwork::statusToFailure(wl_status_t status) 
 	}
 }
 
-void WiFiNetwork::showConnectionAttemptFailed(const char* type) const {
-	wifiHandlerLogger.error(
-		"Can't connect from %s credentials, error: %d, reason: %s.",
-		type,
-		static_cast<int>(statusToFailure(WiFi.status())),
-		statusToReasonString(WiFi.status())
-	);
+WiFiNetwork::WiFiState::WiFiState(WiFiNetwork& context, WiFiReconnectionStatus status)
+	: context{context}
+	, status{status} {}
+
+WiFiNetwork::WiFiReconnectionStatus WiFiNetwork::WiFiState::toStatus() const {
+	return status;
 }
 
-bool WiFiNetwork::trySavedCredentials() {
-	if (getSSID().length() == 0) {
-		wifiHandlerLogger.debug("Skipping saved credentials attempt on 0-length SSID..."
-		);
-		wifiState = WiFiReconnectionStatus::HardcodeAttempt;
-		return false;
+WiFiNetwork::ConnectingState::ConnectingState(
+	WiFiNetwork& context,
+	WiFiReconnectionStatus status
+)
+	: WiFiState{context, status} {}
+
+void WiFiNetwork::ConnectingState::reportWifiProgress() {
+	if (context.wifiReportTimeout.elapsed()) {
+		context.wifiReportTimeout.restart();
+		Serial.print(".");
 	}
-
-	if (wifiState == WiFiReconnectionStatus::SavedAttempt) {
-		showConnectionAttemptFailed("saved");
-
-		if (WiFi.status() != WL_DISCONNECTED) {
-			return false;
-		}
-
-		if (retriedOnG) {
-			return false;
-		}
-
-		retriedOnG = true;
-		wifiHandlerLogger.debug("Trying saved credentials with PHY Mode G...");
-		return tryConnecting(true);
-	}
-
-	retriedOnG = false;
-
-	wifiState = WiFiReconnectionStatus::SavedAttempt;
-	return tryConnecting();
 }
 
-bool WiFiNetwork::tryHardcodedCredentials() {
-#if defined(WIFI_CREDS_SSID) && defined(WIFI_CREDS_PASSWD)
-	if (wifiState == WiFiReconnectionStatus::HardcodeAttempt) {
-		showConnectionAttemptFailed("hardcoded");
+void WiFiNetwork::ConnectingState::tick() { this->reportWifiProgress(); }
 
-		if (WiFi.status() != WL_DISCONNECTED) {
-			return false;
-		}
-
-		if (retriedOnG) {
-			return false;
-		}
-
-		retriedOnG = true;
-		wifiHandlerLogger.debug("Trying hardcoded credentials with PHY Mode G...");
-		// Don't need to save hardcoded credentials
-		WiFi.persistent(false);
-		auto result = tryConnecting(true, WIFI_CREDS_SSID, WIFI_CREDS_PASSWD);
-		WiFi.persistent(true);
-		return result;
-	}
-
-	retriedOnG = false;
-
-	wifiState = WiFiReconnectionStatus::HardcodeAttempt;
-	// Don't need to save hardcoded credentials
-	WiFi.persistent(false);
-	auto result = tryConnecting(false, WIFI_CREDS_SSID, WIFI_CREDS_PASSWD);
-	WiFi.persistent(true);
-	return result;
-#else
-	wifiState = WiFiReconnectionStatus::HardcodeAttempt;
-	return false;
-#endif
-}
-
-bool WiFiNetwork::tryServerCredentials() {
-	if (WiFi.status() != WL_DISCONNECTED) {
-		return false;
-	}
-
-	if (retriedOnG) {
-		return false;
-	}
-
-	retriedOnG = true;
-
-	return tryConnecting(true);
-}
-
-bool WiFiNetwork::tryConnecting(bool phyModeG, const char* SSID, const char* pass) {
+bool WiFiNetwork::ConnectingState::tryConnecting(
+	bool phyModeG,
+	const char* SSID,
+	const char* pass
+) {
 #if ESP8266
 	if (phyModeG) {
 		WiFi.setPhyMode(WIFI_PHY_MODE_11G);
@@ -382,8 +222,216 @@ bool WiFiNetwork::tryConnecting(bool phyModeG, const char* SSID, const char* pas
 	} else {
 		WiFi.begin(SSID, pass);
 	}
-	wifiConnectionTimeout = millis();
 	return true;
+}
+
+void WiFiNetwork::ConnectingState::setStaticIPIfDefined() {
+#ifdef WIFI_USE_STATICIP
+	const IPAddress ip(WIFI_STATIC_IP);
+	const IPAddress gateway(WIFI_STATIC_GATEWAY);
+	const IPAddress subnet(WIFI_STATIC_SUBNET);
+	WiFi.config(ip, gateway, subnet);
+#endif
+}
+
+void WiFiNetwork::ConnectingState::showConnectionAttemptFailed(const char* type) const {
+	context.logger.error(
+		"Can't connect from %s credentials, error: %d, reason: %s.",
+		type,
+		static_cast<int>(statusToFailure(WiFi.status())),
+		statusToReasonString(WiFi.status())
+	);
+}
+
+WiFiNetwork::NotSetupState::NotSetupState(WiFiNetwork& context)
+	: WiFiState{context, WiFiReconnectionStatus::NotSetup} {}
+
+void WiFiNetwork::NotSetupState::tick() {
+	// Do nothing
+}
+
+WiFiNetwork::SavedCredentialsAttemptState::SavedCredentialsAttemptState(
+	WiFiNetwork& context
+)
+	: ConnectingState{context, WiFiReconnectionStatus::SavedAttempt} {}
+
+void WiFiNetwork::SavedCredentialsAttemptState::tick() {
+	ConnectingState::tick();
+
+	if (getSSID().length() == 0) {
+		context.logger.debug("Skipping saved credentials attempt on 0-length SSID...");
+		context.transitionState(
+			std::make_unique<HardcodedCredentialsAttemptState>(context)
+		);
+		return;
+	}
+
+	if (!setup) {
+		tryConnecting();
+		setup = true;
+		return;
+	}
+
+	if (WiFi.status() == WL_CONNECTED) {
+		context.transitionState(std::make_unique<ConnectedState>(context));
+		return;
+	}
+
+	if (!wifiTimeout.elapsed() && WiFi.status() == WL_DISCONNECTED) {
+		return;
+	}
+
+	showConnectionAttemptFailed("saved");
+
+	if (WiFi.status() == WL_DISCONNECTED && !retriedOnG) {
+		retriedOnG = true;
+		context.logger.debug("Trying saved credentials with PHY Mode G...");
+		tryConnecting(true);
+		wifiTimeout.restart();
+		return;
+	}
+
+	context.transitionState(
+		std::make_unique<HardcodedCredentialsAttemptState>(context)
+	);
+}
+
+WiFiNetwork::HardcodedCredentialsAttemptState::HardcodedCredentialsAttemptState(
+	WiFiNetwork& context
+)
+	: ConnectingState{context, WiFiReconnectionStatus::HardcodeAttempt} {}
+
+void WiFiNetwork::HardcodedCredentialsAttemptState::tick() {
+#if defined(WIFI_CREDS_SSID) && defined(WIFI_CREDS_PASSWD)
+	ConnectingState::tick();
+
+	if (!setup) {
+		setup = true;
+		WiFi.persistent(false);
+		auto result = tryConnecting(false, WIFI_CREDS_SSID, WIFI_CREDS_PASSWD);
+		WiFi.persistent(true);
+		if (!result) {
+			context.transitionState(std::make_unique<FailedState>(context));
+		}
+		return;
+	}
+
+	if (WiFi.status() == WL_CONNECTED) {
+		context.transitionState(std::make_unique<ConnectedState>(context));
+		return;
+	}
+
+	if (!wifiTimeout.elapsed() && WiFi.status() == WL_DISCONNECTED) {
+		return;
+	}
+
+	showConnectionAttemptFailed("hardcoded");
+
+	if (WiFi.status() == WL_DISCONNECTED && !retriedOnG) {
+		retriedOnG = true;
+		context.logger.debug("Trying hardcoded credentials with PHY Mode G...");
+		// Don't need to save hardcoded credentials
+		WiFi.persistent(false);
+		auto result = tryConnecting(true, WIFI_CREDS_SSID, WIFI_CREDS_PASSWD);
+		wifiTimeout.restart();
+		WiFi.persistent(true);
+
+		if (!result) {
+			context.transitionState(std::make_unique<FailedState>(context));
+		}
+		return;
+	}
+
+	context.transitionState(std::make_unique<FailedState>(context));
+#else
+	context.transitionState(std::make_unique<FailedState>(context));
+#endif
+}
+
+WiFiNetwork::ServerCredentialsAttemptState::ServerCredentialsAttemptState(
+	WiFiNetwork& context,
+	std::string&& SSID,
+	std::string&& pass
+)
+	: ConnectingState{context, WiFiReconnectionStatus::ServerCredAttempt}
+	, SSID{std::move(SSID)}
+	, pass{std::move(pass)} {
+	context.hadWifi = false;
+	tryConnecting(false, SSID.c_str(), pass.c_str());
+}
+
+void WiFiNetwork::ServerCredentialsAttemptState::tick() {
+	ConnectingState::tick();
+
+	if (WiFi.status() == WL_CONNECTED) {
+		context.transitionState(std::make_unique<ConnectedState>(context));
+		return;
+	}
+
+	if (!wifiTimeout.elapsed() && WiFi.status() == WL_DISCONNECTED) {
+		return;
+	}
+
+	if (WiFi.status() == WL_DISCONNECTED && !retriedOnG) {
+		tryConnecting(true);
+		retriedOnG = true;
+		return;
+	}
+
+	context.transitionState(std::make_unique<FailedState>(context));
+}
+
+WiFiNetwork::FailedState::FailedState(WiFiNetwork& context)
+	: WiFiState{context, WiFiReconnectionStatus::Failed} {}
+
+void WiFiNetwork::FailedState::tick() {
+#if ESP8266
+	if constexpr (USE_ATTENUATION) {
+		WiFi.setOutputPower(20.0 - ATTENUATION_N);
+	}
+	WiFi.setPhyMode(WIFI_PHY_MODE_11N);
+#endif
+	// Start smart config
+	if (!context.hadWifi && !WiFi.smartConfigDone() && wifiTimeout.elapsed()) {
+		if (WiFi.status() != WL_IDLE_STATUS) {
+			context.logger.error(
+				"Can't connect from any credentials, error: %d, reason: %s.",
+				static_cast<int>(statusToFailure(WiFi.status())),
+				statusToReasonString(WiFi.status())
+			);
+			wifiTimeout.restart();
+		}
+		wifiProvisioning.startProvisioning();
+	}
+}
+
+WiFiNetwork::ConnectedState::ConnectedState(WiFiNetwork& context)
+	: WiFiState{context, WiFiReconnectionStatus::Success} {
+	wifiProvisioning.stopProvisioning();
+	statusManager.setStatus(SlimeVR::Status::WIFI_CONNECTING, false);
+	context.hadWifi = true;
+	context.logger.info(
+		"Connected successfully to SSID '%s', IP address %s",
+		getSSID().c_str(),
+		WiFi.localIP().toString().c_str()
+	);
+}
+
+void WiFiNetwork::ConnectedState::tick() {
+	if (WiFi.status() != WL_CONNECTED) {
+		statusManager.setStatus(SlimeVR::Status::WIFI_CONNECTING, true);
+		context.logger.warn("Connection to WiFi lost, reconnecting...");
+		context.transitionState(
+			std::make_unique<SavedCredentialsAttemptState>(context)
+		);
+		return;
+	}
+
+	if (rssiTimeout.elapsed()) {
+		uint8_t signalStrength = WiFi.RSSI();
+		networkConnection.sendSignalStrength(signalStrength);
+		rssiTimeout.restart();
+	}
 }
 
 }  // namespace SlimeVR

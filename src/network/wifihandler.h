@@ -22,7 +22,10 @@
 */
 #pragma once
 
+#include <memory>
+
 #include "logging/Logger.h"
+#include "utils/Timeout.h"
 #ifdef ESP8266
 #include <ESP8266WiFi.h>
 #else
@@ -54,43 +57,116 @@ public:
 	void upkeep();
 	void setWiFiCredentials(const char* SSID, const char* pass);
 	static IPAddress getAddress();
-	WiFiReconnectionStatus getWiFiState();
+	[[nodiscard]] WiFiReconnectionStatus getWiFiState() const;
 
 private:
 	static constexpr float WiFiTimeoutSeconds = 11;
+	static constexpr uint64_t RssiReportIntervalMillis = 2000;
+	static constexpr uint64_t WiFiReportIntervalMillis = 1000;
 
-	void reportWifiProgress();
-	void setStaticIPIfDefined();
-	void onConnected();
+	class WiFiState {
+	public:
+		WiFiState(WiFiNetwork& context, WiFiReconnectionStatus status);
+
+		virtual void tick() = 0;
+
+		[[nodiscard]] WiFiReconnectionStatus toStatus() const;
+
+	protected:
+		WiFiNetwork& context;
+		WiFiReconnectionStatus status;
+	};
+
+	class ConnectingState : public WiFiState {
+	protected:
+		ConnectingState(WiFiNetwork& context, WiFiReconnectionStatus status);
+		void tick() override;
+		bool tryConnecting(
+			bool phyModeG = false,
+			const char* SSID = nullptr,
+			const char* pass = nullptr
+		);
+		void setStaticIPIfDefined();
+		void showConnectionAttemptFailed(const char* type) const;
+
+	protected:
+		Timeout wifiTimeout{static_cast<uint64_t>(WiFiTimeoutSeconds * 1000)};
+
+	private:
+		void reportWifiProgress();
+	};
+
+	class NotSetupState final : public WiFiState {
+	public:
+		explicit NotSetupState(WiFiNetwork& context);
+		void tick() final;
+	};
+
+	class SavedCredentialsAttemptState final : public ConnectingState {
+	public:
+		explicit SavedCredentialsAttemptState(WiFiNetwork& context);
+		void tick() final;
+
+	private:
+		bool setup = false;
+		bool retriedOnG = false;
+	};
+
+	class HardcodedCredentialsAttemptState final : public ConnectingState {
+	public:
+		explicit HardcodedCredentialsAttemptState(WiFiNetwork& context);
+		void tick() final;
+
+	private:
+		bool setup = false;
+		bool retriedOnG = false;
+	};
+
+	class ServerCredentialsAttemptState final : public ConnectingState {
+	public:
+		explicit ServerCredentialsAttemptState(
+			WiFiNetwork& context,
+			std::string&& SSID,
+			std::string&& pass
+		);
+		void tick() final;
+
+	private:
+		std::string&& SSID;
+		std::string&& pass;
+		bool retriedOnG = false;
+	};
+
+	class FailedState final : public WiFiState {
+	public:
+		explicit FailedState(WiFiNetwork& context);
+		void tick() final;
+
+	private:
+		Timeout wifiTimeout{static_cast<uint64_t>(WiFiTimeoutSeconds * 1000)};
+	};
+
+	class ConnectedState final : public WiFiState {
+	public:
+		explicit ConnectedState(WiFiNetwork& context);
+		void tick() final;
+
+	private:
+		Timeout rssiTimeout{RssiReportIntervalMillis};
+	};
+
+	void transitionState(std::unique_ptr<WiFiState>&& newState);
 
 	static String getSSID();
 	static String getPassword();
-
-	bool trySavedCredentials();
-	bool tryHardcodedCredentials();
-	bool tryServerCredentials();
-	bool tryConnecting(
-		bool phyModeG = false,
-		const char* SSID = nullptr,
-		const char* pass = nullptr
-	);
-
-	void showConnectionAttemptFailed(const char* type) const;
-
 	static const char* statusToReasonString(wl_status_t status);
 	static WiFiFailureReason statusToFailure(wl_status_t status);
 
-	unsigned long lastWifiReportTime = 0;
-	unsigned long wifiConnectionTimeout = millis();
-	bool isWifiConnected = false;
-	WiFiReconnectionStatus wifiState = WiFiReconnectionStatus::NotSetup;
-	bool retriedOnG = false;
+	std::unique_ptr<WiFiState> currentState;
+	Timeout wifiReportTimeout{WiFiReportIntervalMillis};
 	bool hadWifi = false;
-	unsigned long lastRssiSample = 0;
 
-	uint8_t lastFailStatus = 0;
-
-	SlimeVR::Logging::Logger wifiHandlerLogger{"WiFiHandler"};
+	SlimeVR::Logging::Logger logger{"WiFiHandler"};
 };
 
 /** Wifi Reconnection Statuses **/
