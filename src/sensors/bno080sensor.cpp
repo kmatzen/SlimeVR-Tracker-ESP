@@ -323,7 +323,7 @@ void BNO080Sensor::motionLoop() {
 
 SensorStatus BNO080Sensor::getSensorState() {
 	return ((lastReset > 0) || (!isWorking() && hadData)) ? SensorStatus::SENSOR_ERROR
-		 : isWorking() ? SensorStatus::SENSOR_OK
+		 : isWorking()                                    ? SensorStatus::SENSOR_OK
 					   : SensorStatus::SENSOR_OFFLINE;
 }
 

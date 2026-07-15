@@ -32,11 +32,8 @@
 // saved to NVS. Increments through the list then stops; to prevent unwelcome eeprom
 // wear.
 int bias_save_periods[]
-	= {120,
-	   180,
-	   300,
-	   600,
-	   600};  // 2min + 3min + 5min + 10min + 10min (no more saves after 30min)
+	= {120, 180, 300, 600, 600
+};  // 2min + 3min + 5min + 10min + 10min (no more saves after 30min)
 
 #define ACCEL_SENSITIVITY_4G 8192.0f
 
@@ -103,9 +100,7 @@ void ICM20948Sensor::readFIFOToEnd() {
 	ICM_20948_Status_e readStatus = imu.readDMPdataFromFIFO(&dmpDataTemp);
 
 #ifdef DEBUG_SENSOR
-	{
-		m_Logger.trace("e0x%02x", readStatus);
-	}
+	{ m_Logger.trace("e0x%02x", readStatus); }
 #endif
 
 	if (readStatus == ICM_20948_Stat_Ok) {
@@ -123,9 +118,7 @@ void ICM20948Sensor::sendData() {
 		newFusedRotation = false;
 
 #if (USE_6_AXIS)
-		{
-			networkManager.comms().sendRotation(sensorId, fusedRotation, 0);
-		}
+		{ networkManager.comms().sendRotation(sensorId, fusedRotation, 0); }
 #else
 		{
 			networkManager.comms()
@@ -392,9 +385,7 @@ void ICM20948Sensor::readRotation() {
 
 void ICM20948Sensor::saveCalibration(bool repeat) {
 #if (!SAVE_BIAS)
-	{
-		return;
-	}
+	{ return; }
 #endif
 #ifdef DEBUG_SENSOR
 	m_Logger.trace("Saving Bias");
@@ -447,9 +438,7 @@ void ICM20948Sensor::saveCalibration(bool repeat) {
 
 void ICM20948Sensor::loadCalibration() {
 #if (!LOAD_BIAS)
-	{
-		return;
-	}
+	{ return; }
 #endif
 
 	SlimeVR::Configuration::SensorConfig sensorCalibration

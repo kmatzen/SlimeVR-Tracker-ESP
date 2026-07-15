@@ -164,13 +164,13 @@ public:
 		uint8_t = 0
 	)
 		: Sensor(
-			  SensorType::Name,
-			  SensorType::Type,
-			  id,
-			  registerInterface,
-			  rotation,
-			  sensorInterface
-		  )
+			SensorType::Name,
+			SensorType::Type,
+			id,
+			registerInterface,
+			rotation,
+			sensorInterface
+		)
 		, m_fusion(
 			  SensorType::SensorVQFParams,
 			  SensorType::GyrTs,
@@ -291,9 +291,7 @@ public:
 		// zero-ed out
 		if (calibrator.calibrationMatches(sensorCalibration)) {
 			calibrator.assignCalibration(sensorCalibration);
-		} else if (
-			sensorCalibration.type == SlimeVR::Configuration::SensorConfigType::NONE
-		) {
+		} else if (sensorCalibration.type == SlimeVR::Configuration::SensorConfigType::NONE) {
 			m_Logger.warn(
 				"No calibration data found for sensor %d, ignoring...",
 				sensorId
@@ -342,10 +340,9 @@ public:
 					.writeByte = [&](uint8_t address, uint8_t value) {},
 					.setDeviceId
 					= [&](uint8_t deviceId) { m_sensor.setAuxId(deviceId); },
-					.startPolling =
-						[&](uint8_t dataReg, SoftFusion::MagDataWidth dataWidth) {
-							m_sensor.startAuxPolling(dataReg, dataWidth);
-						},
+					.startPolling
+					= [&](uint8_t dataReg, SoftFusion::MagDataWidth dataWidth
+					  ) { m_sensor.startAuxPolling(dataReg, dataWidth); },
 					.stopPolling = [&]() { m_sensor.stopAuxPolling(); },
 				},
 				Consts::Supports9ByteMag

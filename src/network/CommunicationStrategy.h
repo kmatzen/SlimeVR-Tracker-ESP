@@ -49,7 +49,8 @@ public:
 
 	virtual void sendAcceleration(uint8_t sensorId, Vector3 accel) = 0;
 	virtual void
-	sendRotation(uint8_t sensorId, const Quat& quaternion, uint8_t accuracyInfo) = 0;
+	sendRotation(uint8_t sensorId, const Quat& quaternion, uint8_t accuracyInfo)
+		= 0;
 	virtual void sendSensorTap(uint8_t sensorId, uint8_t value) = 0;
 	virtual void sendSensorError(uint8_t sensorId, SensorErrorCode error) = 0;
 	virtual void sendTemperature(uint8_t sensorId, float temperature) = 0;

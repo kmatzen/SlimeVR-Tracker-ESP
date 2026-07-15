@@ -250,12 +250,10 @@ void WiFiCommunication::sendFeatureFlags() {
 
 void WiFiCommunication::sendSignalStrength(uint8_t signalStrength) {
 	MUST(connectedToServer);
-	wifiPackets.sendPacket(
-		SignalStrengthPacket{
-			.sensorId = 255,
-			.signalStrength = signalStrength,
-		}
-	);
+	wifiPackets.sendPacket(SignalStrengthPacket{
+		.sensorId = 255,
+		.signalStrength = signalStrength,
+	});
 }
 
 void WiFiCommunication::sendBatteryLevel(
@@ -263,24 +261,20 @@ void WiFiCommunication::sendBatteryLevel(
 	float batteryPercentage
 ) {
 	MUST(connectedToServer);
-	MUST(wifiPackets.sendPacket(
-		BatteryLevelPacket{
-			.batteryVoltage = batteryVoltage,
-			.batteryPercentage = batteryPercentage,
-		}
-	));
+	MUST(wifiPackets.sendPacket(BatteryLevelPacket{
+		.batteryVoltage = batteryVoltage,
+		.batteryPercentage = batteryPercentage,
+	}));
 }
 
 void WiFiCommunication::sendAcceleration(uint8_t sensorId, Vector3 accel) {
 	MUST(connectedToServer);
-	wifiPackets.sendPacket(
-		AccelPacket{
-			.x = accel.x,
-			.y = accel.y,
-			.z = accel.z,
-			.sensorId = sensorId,
-		}
-	);
+	wifiPackets.sendPacket(AccelPacket{
+		.x = accel.x,
+		.y = accel.y,
+		.z = accel.z,
+		.sensorId = sensorId,
+	});
 }
 
 void WiFiCommunication::sendRotation(
@@ -289,57 +283,47 @@ void WiFiCommunication::sendRotation(
 	uint8_t accuracyInfo
 ) {
 	MUST(connectedToServer);
-	wifiPackets.sendPacket(
-		RotationDataPacket{
-			.sensorId = sensorId,
-			.dataType = DATA_TYPE_NORMAL,
-			.x = quaternion.x,
-			.y = quaternion.y,
-			.z = quaternion.z,
-			.w = quaternion.w,
-			.accuracyInfo = accuracyInfo,
-		}
-	);
+	wifiPackets.sendPacket(RotationDataPacket{
+		.sensorId = sensorId,
+		.dataType = DATA_TYPE_NORMAL,
+		.x = quaternion.x,
+		.y = quaternion.y,
+		.z = quaternion.z,
+		.w = quaternion.w,
+		.accuracyInfo = accuracyInfo,
+	});
 }
 
 void WiFiCommunication::sendSensorTap(uint8_t sensorId, uint8_t value) {
 	MUST(connectedToServer);
-	wifiPackets.sendPacket(
-		TapPacket{
-			.sensorId = sensorId,
-			.value = value,
-		}
-	);
+	wifiPackets.sendPacket(TapPacket{
+		.sensorId = sensorId,
+		.value = value,
+	});
 }
 
 void WiFiCommunication::sendSensorError(uint8_t sensorId, SensorErrorCode error) {
 	MUST(connectedToServer);
-	wifiPackets.sendPacket(
-		ErrorPacket{
-			.sensorId = sensorId,
-			.error = error,
-		}
-	);
+	wifiPackets.sendPacket(ErrorPacket{
+		.sensorId = sensorId,
+		.error = error,
+	});
 }
 
 void WiFiCommunication::sendTemperature(uint8_t sensorId, float temperature) {
 	MUST(connectedToServer);
-	wifiPackets.sendPacket(
-		TemperaturePacket{
-			.sensorId = sensorId,
-			.temperature = temperature,
-		}
-	);
+	wifiPackets.sendPacket(TemperaturePacket{
+		.sensorId = sensorId,
+		.temperature = temperature,
+	});
 }
 
 void WiFiCommunication::sendFlexData(uint8_t sensorId, float flexLevel) {
 	MUST(connectedToServer);
-	wifiPackets.sendPacket(
-		FlexDataPacket{
-			.sensorId = sensorId,
-			.flexLevel = flexLevel,
-		}
-	);
+	wifiPackets.sendPacket(FlexDataPacket{
+		.sensorId = sensorId,
+		.flexLevel = flexLevel,
+	});
 }
 
 void WiFiCommunication::sendRawIMUData(
@@ -349,28 +333,26 @@ void WiFiCommunication::sendRawIMUData(
 	std::array<int16_t, 3>& mag
 ) {
 	MUST(connectedToServer);
-	wifiPackets.sendPacket(
-		IntRawImuDataInspectionPacket{
-			.inspectionPacketType = InspectionPacketType::RawImuData,
-			.sensorId = sensorId,
-			.inspectionDataType = InspectionDataType::Int,
+	wifiPackets.sendPacket(IntRawImuDataInspectionPacket{
+		.inspectionPacketType = InspectionPacketType::RawImuData,
+		.sensorId = sensorId,
+		.inspectionDataType = InspectionDataType::Int,
 
-			.rX = static_cast<uint32_t>(gyro[0]),
-			.rY = static_cast<uint32_t>(gyro[1]),
-			.rZ = static_cast<uint32_t>(gyro[2]),
-			.rA = 0,
+		.rX = static_cast<uint32_t>(gyro[0]),
+		.rY = static_cast<uint32_t>(gyro[1]),
+		.rZ = static_cast<uint32_t>(gyro[2]),
+		.rA = 0,
 
-			.aX = static_cast<uint32_t>(accel[0]),
-			.aY = static_cast<uint32_t>(accel[1]),
-			.aZ = static_cast<uint32_t>(accel[2]),
-			.aA = 0,
+		.aX = static_cast<uint32_t>(accel[0]),
+		.aY = static_cast<uint32_t>(accel[1]),
+		.aZ = static_cast<uint32_t>(accel[2]),
+		.aA = 0,
 
-			.mX = static_cast<uint32_t>(mag[0]),
-			.mY = static_cast<uint32_t>(mag[1]),
-			.mZ = static_cast<uint32_t>(mag[2]),
-			.mA = 0,
-		}
-	);
+		.mX = static_cast<uint32_t>(mag[0]),
+		.mY = static_cast<uint32_t>(mag[1]),
+		.mZ = static_cast<uint32_t>(mag[2]),
+		.mA = 0,
+	});
 }
 
 void WiFiCommunication::sendRawIMUData(
@@ -380,28 +362,26 @@ void WiFiCommunication::sendRawIMUData(
 	std::array<float, 3>& mag
 ) {
 	MUST(connectedToServer);
-	wifiPackets.sendPacket(
-		FloatRawImuDataInspectionPacket{
-			.inspectionPacketType = InspectionPacketType::RawImuData,
-			.sensorId = sensorId,
-			.inspectionDataType = InspectionDataType::Float,
+	wifiPackets.sendPacket(FloatRawImuDataInspectionPacket{
+		.inspectionPacketType = InspectionPacketType::RawImuData,
+		.sensorId = sensorId,
+		.inspectionDataType = InspectionDataType::Float,
 
-			.rX = gyro[0],
-			.rY = gyro[1],
-			.rZ = gyro[2],
-			.rA = 0,
+		.rX = gyro[0],
+		.rY = gyro[1],
+		.rZ = gyro[2],
+		.rA = 0,
 
-			.aX = accel[0],
-			.aY = accel[1],
-			.aZ = accel[2],
-			.aA = 0,
+		.aX = accel[0],
+		.aY = accel[1],
+		.aZ = accel[2],
+		.aA = 0,
 
-			.mX = mag[0],
-			.mY = mag[1],
-			.mZ = mag[2],
-			.mA = 0,
-		}
-	);
+		.mX = mag[0],
+		.mY = mag[1],
+		.mZ = mag[2],
+		.mA = 0,
+	});
 }
 
 void WiFiCommunication::sendHeartbeat() {
@@ -435,8 +415,7 @@ void WiFiCommunication::sendTrackerDiscovery() {
 			MUST_TRANSFER_BOOL(wifiPackets.write(mac, 6));
 			// Tracker type to hint the server if it's a glove or normal tracker or
 			// something else
-			MUST_TRANSFER_BOOL(
-				wifiPackets.sendByte(static_cast<uint8_t>(TRACKER_TYPE))
+			MUST_TRANSFER_BOOL(wifiPackets.sendByte(static_cast<uint8_t>(TRACKER_TYPE))
 			);
 			static_assert(std::string_view{VENDOR_NAME}.size() <= 255);
 			MUST_TRANSFER_BOOL(wifiPackets.sendShortString(VENDOR_NAME));
@@ -456,20 +435,18 @@ void WiFiCommunication::sendTrackerDiscovery() {
 
 void WiFiCommunication::sendSensorInfo(::Sensor& sensor) {
 	MUST(connectedToServer);
-	wifiPackets.sendPacket(
-		SensorInfoPacket{
-			.sensorId = sensor.getSensorId(),
-			.sensorState = sensor.getSensorState(),
-			.sensorType = sensor.getSensorType(),
-			.sensorConfigData = sensor.getSensorConfigData(),
-			.hasCompletedRestCalibration = sensor.hasCompletedRestCalibration(),
-			.sensorPosition = sensor.getSensorPosition(),
-			.sensorDataType = sensor.getDataType(),
+	wifiPackets.sendPacket(SensorInfoPacket{
+		.sensorId = sensor.getSensorId(),
+		.sensorState = sensor.getSensorState(),
+		.sensorType = sensor.getSensorType(),
+		.sensorConfigData = sensor.getSensorConfigData(),
+		.hasCompletedRestCalibration = sensor.hasCompletedRestCalibration(),
+		.sensorPosition = sensor.getSensorPosition(),
+		.sensorDataType = sensor.getDataType(),
 
-			.tpsCounterAveragedTps = sensor.m_tpsCounter.getAveragedTPS(),
-			.dataCounterAveragedTps = sensor.m_dataCounter.getAveragedTPS(),
-		}
-	);
+		.tpsCounterAveragedTps = sensor.m_tpsCounter.getAveragedTPS(),
+		.dataCounterAveragedTps = sensor.m_dataCounter.getAveragedTPS(),
+	});
 }
 
 void WiFiCommunication::sendAcknowledgeConfigChange(
@@ -477,12 +454,10 @@ void WiFiCommunication::sendAcknowledgeConfigChange(
 	SensorToggles configType
 ) {
 	MUST(connectedToServer);
-	wifiPackets.sendPacket(
-		AcknowledgeConfigChangePacket{
-			.sensorId = sensorId,
-			.configType = configType,
-		}
-	);
+	wifiPackets.sendPacket(AcknowledgeConfigChangePacket{
+		.sensorId = sensorId,
+		.configType = configType,
+	});
 }
 
 void WiFiCommunication::returnLastPacket(size_t length) {
@@ -492,8 +467,7 @@ void WiFiCommunication::returnLastPacket(size_t length) {
 	MUST(wifiPackets.endPacket());
 }
 
-void WiFiCommunication::updateSensorState(
-	std::vector<std::unique_ptr<Sensor>>& sensors
+void WiFiCommunication::updateSensorState(std::vector<std::unique_ptr<Sensor>>& sensors
 ) {
 	if (!sensorStateSendTimeout.elapsed()) {
 		return;

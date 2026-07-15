@@ -339,8 +339,7 @@ void WiFiConnection::ConnectingState::setStaticIPIfDefined() {
 #endif
 }
 
-void WiFiConnection::ConnectingState::showConnectionAttemptFailed(
-	const char* type
+void WiFiConnection::ConnectingState::showConnectionAttemptFailed(const char* type
 ) const {
 	context.logger.error(
 		"Can't connect from %s credentials, error: %d, reason: %s.",

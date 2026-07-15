@@ -53,8 +53,8 @@ public:
 	void sendSignalStrength(uint8_t signalStrength) final;
 
 	void sendAcceleration(uint8_t sensorId, Vector3 accel) final;
-	void
-	sendRotation(uint8_t sensorId, const Quat& quaternion, uint8_t accuracyInfo) final;
+	void sendRotation(uint8_t sensorId, const Quat& quaternion, uint8_t accuracyInfo)
+		final;
 	void sendSensorTap(uint8_t sensorId, uint8_t value) final;
 	void sendSensorError(uint8_t sensorId, SensorErrorCode error) final;
 	void sendTemperature(uint8_t sensorId, float temperature) final;
