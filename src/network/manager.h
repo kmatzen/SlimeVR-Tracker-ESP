@@ -35,14 +35,14 @@ public:
 	void setup();
 	void update();
 
-	Communication::CommunicationStrategy& comms();
+	WiFiComms::CommunicationStrategy& comms();
 
 	void connectToWiFiWithCredentials(const char* SSID, const char* pass);
 
 private:
-	std::unique_ptr<Communication::CommunicationStrategy> communication;
+	std::unique_ptr<WiFiComms::CommunicationStrategy> communication;
 
-	Communication::WiFiConnection wifiConnection;
+	WiFiComms::WiFiConnection wifiConnection;
 };
 
 }  // namespace SlimeVR::Network

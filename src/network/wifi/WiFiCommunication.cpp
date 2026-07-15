@@ -37,7 +37,7 @@
 #include "network/featureflags.h"
 #include "sensors/sensor.h"
 
-namespace SlimeVR::Communication {
+namespace SlimeVR::Network::WiFiComms {
 
 WiFiCommunication::WiFiCommunication(WiFiConnection& connection)
 	: wifiConnection{connection}
@@ -102,18 +102,6 @@ void WiFiCommunication::tick() {
 	if (packetSize == 0) {
 		return;
 	}
-
-#ifdef DEBUG_NETWORK
-	logger.trace(
-		"Received %d bytes from %s, port %d",
-		packetSize,
-		UDP.remoteIP().toString().c_str(),
-		UDP.remotePort()
-	);
-	logger.traceArray("UDP packet contents: ", packet, len);
-#else
-	(void)packetSize;
-#endif
 
 	if (static_cast<ReceivePacketType>(inPacket[3]) == ReceivePacketType::Handshake) {
 		logger.warn("Handshake received again, ignoring");
@@ -570,8 +558,7 @@ void WiFiCommunication::searchForServer() {
 				continue;
 			}
 
-			wifiConnection.setIPAddress(wifiConnection.getUDPInstance().remoteIP());
-			wifiConnection.setPort(wifiConnection.getUDPInstance().remotePort());
+			wifiConnection.acceptHandshake();
 			serverResponseTimeout.restart();
 			connectedToServer = true;
 
@@ -580,12 +567,6 @@ void WiFiCommunication::searchForServer() {
 
 			statusManager.setStatus(SlimeVR::Status::SERVER_CONNECTING, false);
 			ledManager.off();
-
-			logger.debug(
-				"Handshake successful, server is %s:%d",
-				wifiConnection.getUDPInstance().remoteIP().toString().c_str(),
-				wifiConnection.getUDPInstance().remotePort()
-			);
 
 			break;
 		}
@@ -627,4 +608,4 @@ void WiFiCommunication::reset() {
 	statusManager.setStatus(SlimeVR::Status::SERVER_CONNECTING, true);
 }
 
-}  // namespace SlimeVR::Communication
+}  // namespace SlimeVR::Network::WiFiComms

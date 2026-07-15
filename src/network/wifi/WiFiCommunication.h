@@ -35,7 +35,7 @@
 #include "network/wifi/WiFiPackets.h"
 #include "utils/Timeout.h"
 
-namespace SlimeVR::Communication {
+namespace SlimeVR::Network::WiFiComms {
 
 class WiFiCommunication final : public CommunicationStrategy {
 public:
@@ -124,4 +124,4 @@ private:
 	uint64_t lastConnectionAttemptMillis = millis();
 };
 
-}  // namespace SlimeVR::Communication
+}  // namespace SlimeVR::Network::WiFiComms

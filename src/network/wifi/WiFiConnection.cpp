@@ -28,11 +28,10 @@
 
 #include <cstdint>
 #include <memory>
-#include <string>
 
 #include "GlobalVars.h"
 
-namespace SlimeVR::Communication {
+namespace SlimeVR::Network::WiFiComms {
 
 void WiFiConnection::init() {
 	logger.info("Setting up WiFi");
@@ -85,13 +84,7 @@ void WiFiConnection::tick() {
 
 void WiFiConnection::setWiFiCredentials(const char* SSID, const char* pass) {
 	wifiProvisioning.stopProvisioning();
-	transitionState(
-		std::make_unique<ServerCredentialsAttemptState>(
-			*this,
-			std::string{SSID},
-			std::string{pass}
-		)
-	);
+	transitionState(std::make_unique<ServerCredentialsAttemptState>(*this, SSID, pass));
 }
 
 void WiFiConnection::reset() {
@@ -160,9 +153,16 @@ void WiFiConnection::setIPAddress(IPAddress&& address) { serverHost = address; }
 
 IPAddress WiFiConnection::getIPAddress() const { return serverHost; }
 
-void WiFiConnection::setPort(short port) { serverPort = port; }
+void WiFiConnection::acceptHandshake() {
+	serverHost = UDP.remoteIP();
+	serverPort = UDP.remotePort();
 
-WiFiUDP& WiFiConnection::getUDPInstance() { return UDP; }
+	logger.debug(
+		"Handshake successful, server is %s:%d",
+		UDP.remoteIP().toString().c_str(),
+		UDP.remotePort()
+	);
+}
 
 WiFiConnection::WiFiReconnectionStatus WiFiConnection::getState() const {
 	return currentState->toStatus();
@@ -248,9 +248,11 @@ WiFiConnection::WiFiReconnectionStatus WiFiConnection::WiFiState::toStatus() con
 
 WiFiConnection::ConnectingState::ConnectingState(
 	WiFiConnection& context,
-	WiFiReconnectionStatus status
+	WiFiReconnectionStatus status,
+	const char* attemptName
 )
-	: WiFiState{context, status} {}
+	: WiFiState{context, status}
+	, attemptName{attemptName} {}
 
 void WiFiConnection::ConnectingState::reportWifiProgress() {
 	if (context.wifiReportTimeout.elapsed()) {
@@ -259,7 +261,42 @@ void WiFiConnection::ConnectingState::reportWifiProgress() {
 	}
 }
 
-void WiFiConnection::ConnectingState::tick() { this->reportWifiProgress(); }
+void WiFiConnection::ConnectingState::tick() {
+	this->reportWifiProgress();
+
+	if (!setup) {
+		if (!attempt(false)) {
+			context.transitionState(nextState());
+			return;
+		}
+		setup = true;
+		return;
+	}
+
+	if (WiFi.status() == WL_CONNECTED) {
+		context.transitionState(std::make_unique<ConnectedState>(context));
+		return;
+	}
+
+	if (!wifiTimeout.elapsed() && WiFi.status() == WL_DISCONNECTED) {
+		return;
+	}
+
+	showConnectionAttemptFailed(attemptName);
+
+	if (WiFi.status() == WL_DISCONNECTED && !retriedOnG) {
+		retriedOnG = true;
+		if (!attempt(true)) {
+			context.transitionState(nextState());
+			return;
+		}
+		wifiTimeout.restart();
+
+		return;
+	}
+
+	context.transitionState(nextState());
+}
 
 bool WiFiConnection::ConnectingState::tryConnecting(
 	bool phyModeG,
@@ -323,15 +360,7 @@ void WiFiConnection::NotSetupState::tick() {
 WiFiConnection::SavedCredentialsAttemptState::SavedCredentialsAttemptState(
 	WiFiConnection& context
 )
-	: ConnectingState{context, WiFiReconnectionStatus::SavedAttempt} {
-	if (getSSID().length() != 0) {
-		tryConnecting();
-	}
-}
-
-void WiFiConnection::SavedCredentialsAttemptState::tick() {
-	ConnectingState::tick();
-
+	: ConnectingState{context, WiFiReconnectionStatus::SavedAttempt, "saved"} {
 	if (getSSID().length() == 0) {
 		context.logger.debug("Skipping saved credentials attempt on 0-length SSID...");
 		context.transitionState(
@@ -339,114 +368,66 @@ void WiFiConnection::SavedCredentialsAttemptState::tick() {
 		);
 		return;
 	}
+}
 
-	if (WiFi.status() == WL_CONNECTED) {
-		context.transitionState(std::make_unique<ConnectedState>(context));
-		return;
-	}
-
-	if (!wifiTimeout.elapsed() && WiFi.status() == WL_DISCONNECTED) {
-		return;
-	}
-
-	showConnectionAttemptFailed("saved");
-
-	if (WiFi.status() == WL_DISCONNECTED && !retriedOnG) {
-		retriedOnG = true;
+bool WiFiConnection::SavedCredentialsAttemptState::attempt(bool retry) {
+	if (retry) {
 		context.logger.debug("Trying saved credentials with PHY Mode G...");
-		tryConnecting(true);
-		wifiTimeout.restart();
-		return;
 	}
 
-	context.transitionState(
-		std::make_unique<HardcodedCredentialsAttemptState>(context)
-	);
+	return tryConnecting(retry);
+}
+
+std::unique_ptr<WiFiConnection::WiFiState>
+WiFiConnection::SavedCredentialsAttemptState::nextState() {
+	return std::make_unique<HardcodedCredentialsAttemptState>(context);
 }
 
 WiFiConnection::HardcodedCredentialsAttemptState::HardcodedCredentialsAttemptState(
 	WiFiConnection& context
 )
-	: ConnectingState{context, WiFiReconnectionStatus::HardcodeAttempt} {}
+	: ConnectingState{context, WiFiReconnectionStatus::HardcodeAttempt, "hardcoded"} {}
 
-void WiFiConnection::HardcodedCredentialsAttemptState::tick() {
+bool WiFiConnection::HardcodedCredentialsAttemptState::attempt(bool retry) {
 #if defined(WIFI_CREDS_SSID) && defined(WIFI_CREDS_PASSWD)
-	ConnectingState::tick();
-
-	if (!setup) {
-		setup = true;
-		WiFi.persistent(false);
-		auto result = tryConnecting(false, WIFI_CREDS_SSID, WIFI_CREDS_PASSWD);
-		WiFi.persistent(true);
-		if (!result) {
-			context.transitionState(std::make_unique<FailedState>(context));
-		}
-		return;
-	}
-
-	if (WiFi.status() == WL_CONNECTED) {
-		context.transitionState(std::make_unique<ConnectedState>(context));
-		return;
-	}
-
-	if (!wifiTimeout.elapsed() && WiFi.status() == WL_DISCONNECTED) {
-		return;
-	}
-
-	showConnectionAttemptFailed("hardcoded");
-
-	if (WiFi.status() == WL_DISCONNECTED && !retriedOnG) {
-		retriedOnG = true;
+	if (retry) {
 		context.logger.debug("Trying hardcoded credentials with PHY Mode G...");
-		// Don't need to save hardcoded credentials
-		WiFi.persistent(false);
-		auto result = tryConnecting(true, WIFI_CREDS_SSID, WIFI_CREDS_PASSWD);
-		wifiTimeout.restart();
-		WiFi.persistent(true);
-
-		if (!result) {
-			context.transitionState(std::make_unique<FailedState>(context));
-		}
-		return;
 	}
 
-	context.transitionState(std::make_unique<FailedState>(context));
+	// Don't need to save hardcoded credentials
+	WiFi.persistent(false);
+	auto result = tryConnecting(retry, WIFI_CREDS_SSID, WIFI_CREDS_PASSWD);
+	WiFi.persistent(true);
+
+	return result;
 #else
-	context.transitionState(std::make_unique<FailedState>(context));
+	return false;
 #endif
+}
+
+std::unique_ptr<WiFiConnection::WiFiState>
+WiFiConnection::HardcodedCredentialsAttemptState::nextState() {
+	return std::make_unique<FailedState>(context);
 }
 
 WiFiConnection::ServerCredentialsAttemptState::ServerCredentialsAttemptState(
 	WiFiConnection& context,
-	std::string&& SSID,
-	std::string&& pass
+	const char* SSID,
+	const char* pass
 )
-	: ConnectingState{context, WiFiReconnectionStatus::ServerCredAttempt}
-	, SSID{std::move(SSID)}
-	, pass{std::move(pass)} {
+	: ConnectingState{context, WiFiReconnectionStatus::ServerCredAttempt, "server"}
+	, SSID{SSID}
+	, pass{pass} {
 	context.hadWifi = false;
-	tryConnecting(false, SSID.c_str(), pass.c_str());
 }
 
-void WiFiConnection::ServerCredentialsAttemptState::tick() {
-	ConnectingState::tick();
+bool WiFiConnection::ServerCredentialsAttemptState::attempt(bool retry) {
+	return tryConnecting(retry, SSID, pass);
+}
 
-	if (WiFi.status() == WL_CONNECTED) {
-		context.transitionState(std::make_unique<ConnectedState>(context));
-		return;
-	}
-
-	if (!wifiTimeout.elapsed() && WiFi.status() == WL_DISCONNECTED) {
-		return;
-	}
-
-	if (WiFi.status() == WL_DISCONNECTED && !retriedOnG) {
-		tryConnecting(true);
-		retriedOnG = true;
-		return;
-	}
-
-	context.transitionState(std::make_unique<FailedState>(context));
+std::unique_ptr<WiFiConnection::WiFiState>
+WiFiConnection::ServerCredentialsAttemptState::nextState() {
+	return std::make_unique<FailedState>(context);
 }
 
 WiFiConnection::FailedState::FailedState(WiFiConnection& context)
@@ -495,4 +476,4 @@ void WiFiConnection::ConnectedState::tick() {
 	context.transitionState(std::make_unique<SavedCredentialsAttemptState>(context));
 }
 
-}  // namespace SlimeVR::Communication
+}  // namespace SlimeVR::Network::WiFiComms

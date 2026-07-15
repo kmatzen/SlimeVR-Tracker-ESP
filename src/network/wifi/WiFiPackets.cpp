@@ -25,7 +25,7 @@
 
 #include <cstring>
 
-namespace SlimeVR::Communication {
+namespace SlimeVR::Network::WiFiComms {
 
 WiFiPackets::WiFiPackets(WiFiConnection& connection)
 	: connection{connection} {}
@@ -142,4 +142,4 @@ bool WiFiPackets::write(const uint8_t* buffer, size_t size) {
 
 bool WiFiPackets::write(uint8_t byte) { return write(&byte, 1); }
 
-}  // namespace SlimeVR::Communication
+}  // namespace SlimeVR::Network::WiFiComms

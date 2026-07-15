@@ -33,17 +33,17 @@ namespace SlimeVR::Network {
 void Manager::setup() {
 	wifiConnection.init();
 
-	communication = std::make_unique<Communication::WiFiCommunication>(wifiConnection);
+	communication = std::make_unique<WiFiComms::WiFiCommunication>(wifiConnection);
 	communication->init();
 }
 
 void Manager::update() { communication->tick(); }
 
-Communication::CommunicationStrategy& Manager::comms() { return *communication; }
+WiFiComms::CommunicationStrategy& Manager::comms() { return *communication; }
 
 void Manager::connectToWiFiWithCredentials(const char* SSID, const char* pass) {
 	wifiConnection.setWiFiCredentials(SSID, pass);
-	communication = std::make_unique<Communication::WiFiCommunication>(wifiConnection);
+	communication = std::make_unique<WiFiComms::WiFiCommunication>(wifiConnection);
 }
 
 }  // namespace SlimeVR::Network

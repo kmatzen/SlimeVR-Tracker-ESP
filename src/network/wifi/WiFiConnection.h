@@ -28,7 +28,6 @@
 #include <WiFiUdp.h>
 
 #include <memory>
-#include <string>
 
 #include "logging/Logger.h"
 #include "utils/Timeout.h"
@@ -41,7 +40,7 @@
 #include <esp_wifi_types.h>
 #endif
 
-namespace SlimeVR::Communication {
+namespace SlimeVR::Network::WiFiComms {
 
 class WiFiConnection {
 public:
@@ -61,7 +60,7 @@ public:
 	void setIPAddress(IPAddress&& address);
 	[[nodiscard]] IPAddress getIPAddress() const;
 
-	void setPort(short port);
+	void acceptHandshake();
 
 	[[nodiscard]] WiFiUDP& getUDPInstance();
 
@@ -101,9 +100,13 @@ private:
 	};
 
 	class ConnectingState : public WiFiState {
-	protected:
-		ConnectingState(WiFiConnection& context, WiFiReconnectionStatus status);
-		void tick() override;
+	public:
+		ConnectingState(
+			WiFiConnection& context,
+			WiFiReconnectionStatus status,
+			const char* attemptName
+		);
+		void tick() final;
 		bool tryConnecting(
 			bool phyModeG = false,
 			const char* SSID = nullptr,
@@ -113,10 +116,16 @@ private:
 		void showConnectionAttemptFailed(const char* type) const;
 
 	protected:
-		Timeout wifiTimeout{static_cast<uint64_t>(WiFiTimeoutSeconds * 1000)};
+		virtual bool attempt(bool retry) = 0;
+		virtual std::unique_ptr<WiFiState> nextState() = 0;
 
 	private:
 		void reportWifiProgress();
+
+		Timeout wifiTimeout{static_cast<uint64_t>(WiFiTimeoutSeconds * 1000)};
+		bool setup = false;
+		bool retriedOnG = false;
+		const char* attemptName;
 	};
 
 	class NotSetupState final : public WiFiState {
@@ -128,35 +137,34 @@ private:
 	class SavedCredentialsAttemptState final : public ConnectingState {
 	public:
 		explicit SavedCredentialsAttemptState(WiFiConnection& context);
-		void tick() final;
+		bool attempt(bool retry) final;
+		std::unique_ptr<WiFiState> nextState() final;
 
 	private:
-		bool retriedOnG = false;
 	};
 
 	class HardcodedCredentialsAttemptState final : public ConnectingState {
 	public:
 		explicit HardcodedCredentialsAttemptState(WiFiConnection& context);
-		void tick() final;
-
-	private:
-		bool setup = false;
-		bool retriedOnG = false;
+		bool attempt(bool retry) final;
+		std::unique_ptr<WiFiState> nextState() final;
 	};
 
 	class ServerCredentialsAttemptState final : public ConnectingState {
 	public:
 		explicit ServerCredentialsAttemptState(
 			WiFiConnection& context,
-			std::string&& SSID,
-			std::string&& pass
+			const char* SSID,
+			const char* pass
 		);
-		void tick() final;
+
+	protected:
+		bool attempt(bool retry) final;
+		std::unique_ptr<WiFiState> nextState() final;
 
 	private:
-		std::string&& SSID;
-		std::string&& pass;
-		bool retriedOnG = false;
+		const char* SSID;
+		const char* pass;
 	};
 
 	class FailedState final : public WiFiState {
@@ -195,4 +203,4 @@ private:
 	SlimeVR::Logging::Logger logger{"WiFiConnection"};
 };
 
-}  // namespace SlimeVR::Communication
+}  // namespace SlimeVR::Network::WiFiComms

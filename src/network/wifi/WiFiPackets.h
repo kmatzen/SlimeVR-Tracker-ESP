@@ -29,7 +29,7 @@
 #include "WiFiConnection.h"
 #include "WiFiPacketDatatypes.h"
 
-namespace SlimeVR::Communication {
+namespace SlimeVR::Network::WiFiComms {
 
 #define MUST_TRANSFER_BOOL(b) \
 	if (!(b))                 \
@@ -129,4 +129,4 @@ private:
 	uint8_t bundleBuffer[128] = {0};
 };
 
-}  // namespace SlimeVR::Communication
+}  // namespace SlimeVR::Network::WiFiComms
