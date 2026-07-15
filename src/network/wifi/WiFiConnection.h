@@ -1,6 +1,6 @@
 /*
 	SlimeVR Code is placed under the MIT license
-	Copyright (c) 2021 Eiren Rain & SlimeVR contributors
+	Copyright (c) 2026 Gorbit99 & SlimeVR Contributors
 
 	Permission is hereby granted, free of charge, to any person obtaining a copy
 	of this software and associated documentation files (the "Software"), to deal
@@ -20,22 +20,51 @@
 	OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 	THE SOFTWARE.
 */
+
 #pragma once
 
+#include <Arduino.h>
+#include <IPAddress.h>
+#include <WiFiUdp.h>
+
 #include <memory>
+#include <string>
 
 #include "logging/Logger.h"
 #include "utils/Timeout.h"
+
 #ifdef ESP8266
 #include <ESP8266WiFi.h>
 #else
 #include <WiFi.h>
+#include <esp_wifi.h>
+#include <esp_wifi_types.h>
 #endif
 
-namespace SlimeVR {
+namespace SlimeVR::Communication {
 
-class WiFiNetwork {
+class WiFiConnection {
 public:
+	void init();
+	void tick();
+	void setWiFiCredentials(const char* SSID, const char* pass);
+	void reset();
+
+	[[nodiscard]] bool isConnected() const;
+
+	bool beginUDPPacket();
+	bool write(const uint8_t* data, size_t length);
+	bool endUDPPacket();
+
+	size_t readUDPPacket(uint8_t* buffer, size_t maxSize);
+
+	void setIPAddress(IPAddress&& address);
+	[[nodiscard]] IPAddress getIPAddress() const;
+
+	void setPort(short port);
+
+	[[nodiscard]] WiFiUDP& getUDPInstance();
+
 	enum class WiFiReconnectionStatus {
 		NotSetup = 0,
 		SavedAttempt,
@@ -45,6 +74,12 @@ public:
 		Success
 	};
 
+	[[nodiscard]] WiFiReconnectionStatus getState() const;
+
+private:
+	constexpr static float WiFiTimeoutSeconds = 11;
+	constexpr static uint64_t WiFiReportIntervalMillis = 1000;
+
 	enum class WiFiFailureReason {
 		Timeout = 0,
 		SSIDNotFound = 1,
@@ -52,34 +87,22 @@ public:
 		Unknown = 3,
 	};
 
-	[[nodiscard]] bool isConnected() const;
-	void setUp();
-	void upkeep();
-	void setWiFiCredentials(const char* SSID, const char* pass);
-	static IPAddress getAddress();
-	[[nodiscard]] WiFiReconnectionStatus getWiFiState() const;
-
-private:
-	static constexpr float WiFiTimeoutSeconds = 11;
-	static constexpr uint64_t RssiReportIntervalMillis = 2000;
-	static constexpr uint64_t WiFiReportIntervalMillis = 1000;
-
 	class WiFiState {
 	public:
-		WiFiState(WiFiNetwork& context, WiFiReconnectionStatus status);
+		WiFiState(WiFiConnection& context, WiFiReconnectionStatus status);
 
 		virtual void tick() = 0;
 
 		[[nodiscard]] WiFiReconnectionStatus toStatus() const;
 
 	protected:
-		WiFiNetwork& context;
+		WiFiConnection& context;
 		WiFiReconnectionStatus status;
 	};
 
 	class ConnectingState : public WiFiState {
 	protected:
-		ConnectingState(WiFiNetwork& context, WiFiReconnectionStatus status);
+		ConnectingState(WiFiConnection& context, WiFiReconnectionStatus status);
 		void tick() override;
 		bool tryConnecting(
 			bool phyModeG = false,
@@ -98,23 +121,22 @@ private:
 
 	class NotSetupState final : public WiFiState {
 	public:
-		explicit NotSetupState(WiFiNetwork& context);
+		explicit NotSetupState(WiFiConnection& context);
 		void tick() final;
 	};
 
 	class SavedCredentialsAttemptState final : public ConnectingState {
 	public:
-		explicit SavedCredentialsAttemptState(WiFiNetwork& context);
+		explicit SavedCredentialsAttemptState(WiFiConnection& context);
 		void tick() final;
 
 	private:
-		bool setup = false;
 		bool retriedOnG = false;
 	};
 
 	class HardcodedCredentialsAttemptState final : public ConnectingState {
 	public:
-		explicit HardcodedCredentialsAttemptState(WiFiNetwork& context);
+		explicit HardcodedCredentialsAttemptState(WiFiConnection& context);
 		void tick() final;
 
 	private:
@@ -125,7 +147,7 @@ private:
 	class ServerCredentialsAttemptState final : public ConnectingState {
 	public:
 		explicit ServerCredentialsAttemptState(
-			WiFiNetwork& context,
+			WiFiConnection& context,
 			std::string&& SSID,
 			std::string&& pass
 		);
@@ -139,7 +161,7 @@ private:
 
 	class FailedState final : public WiFiState {
 	public:
-		explicit FailedState(WiFiNetwork& context);
+		explicit FailedState(WiFiConnection& context);
 		void tick() final;
 
 	private:
@@ -148,11 +170,10 @@ private:
 
 	class ConnectedState final : public WiFiState {
 	public:
-		explicit ConnectedState(WiFiNetwork& context);
+		explicit ConnectedState(WiFiConnection& context);
 		void tick() final;
 
 	private:
-		Timeout rssiTimeout{RssiReportIntervalMillis};
 	};
 
 	void transitionState(std::unique_ptr<WiFiState>&& newState);
@@ -162,12 +183,16 @@ private:
 	static const char* statusToReasonString(wl_status_t status);
 	static WiFiFailureReason statusToFailure(wl_status_t status);
 
+	WiFiUDP UDP;
+
+	int serverPort = 6969;
+	IPAddress serverHost = IPAddress(255, 255, 255, 255);
+
 	std::unique_ptr<WiFiState> currentState;
 	Timeout wifiReportTimeout{WiFiReportIntervalMillis};
 	bool hadWifi = false;
 
-	SlimeVR::Logging::Logger logger{"WiFiHandler"};
+	SlimeVR::Logging::Logger logger{"WiFiConnection"};
 };
 
-/** Wifi Reconnection Statuses **/
-}  // namespace SlimeVR
+}  // namespace SlimeVR::Communication
