@@ -32,7 +32,7 @@
 
 #include "../sensors/SensorErrorCodes.h"
 
-namespace SlimeVR::Network::WiFiComms {
+namespace SlimeVR::Network {
 
 class CommunicationStrategy {
 public:
@@ -72,4 +72,4 @@ public:
 	[[nodiscard]] virtual int getState() const = 0;
 };
 
-}  // namespace SlimeVR::Network::WiFiComms
+}  // namespace SlimeVR::Network

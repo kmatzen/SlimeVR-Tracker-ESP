@@ -39,7 +39,7 @@ void Manager::setup() {
 
 void Manager::update() { communication->tick(); }
 
-WiFiComms::CommunicationStrategy& Manager::comms() { return *communication; }
+CommunicationStrategy& Manager::comms() { return *communication; }
 
 void Manager::connectToWiFiWithCredentials(const char* SSID, const char* pass) {
 	wifiConnection.setWiFiCredentials(SSID, pass);

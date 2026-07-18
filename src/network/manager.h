@@ -35,12 +35,12 @@ public:
 	void setup();
 	void update();
 
-	WiFiComms::CommunicationStrategy& comms();
+	CommunicationStrategy& comms();
 
 	void connectToWiFiWithCredentials(const char* SSID, const char* pass);
 
 private:
-	std::unique_ptr<WiFiComms::CommunicationStrategy> communication;
+	std::unique_ptr<CommunicationStrategy> communication;
 
 	WiFiComms::WiFiConnection wifiConnection;
 };
