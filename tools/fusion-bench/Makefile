@@ -9,6 +9,7 @@
 #   make suite      run the standard benchmark suite
 #   make check      run the suite against the committed baseline (CI gate)
 #   make baseline   regenerate the baseline file
+#   make format     apply the repo's clang-format style
 #   make clean
 
 ROOT     := ../..
@@ -25,7 +26,16 @@ BENCH_SRC := src/main.cpp src/dataset.cpp src/metrics.cpp src/synth.cpp \
 TEST_SRC  := tests/selftest.cpp src/dataset.cpp src/metrics.cpp src/synth.cpp \
              $(VQF_DIR)/vqf.cpp
 
-.PHONY: all test suite check baseline clean
+SOURCES := src/main.cpp src/dataset.cpp src/metrics.cpp src/synth.cpp \
+           src/dataset.h src/metrics.h src/quatmath.h src/synth.h \
+           tests/selftest.cpp
+
+# The repo's `format` CI job runs clang-format 17 over the whole tree, and
+# formatting differs between clang-format versions -- so pin it. `pip install
+# clang-format==17.0.6` gives the exact binary CI uses.
+CLANG_FORMAT ?= clang-format
+
+.PHONY: all test suite check baseline format format-check clean
 
 all: $(BUILD)/fusion-bench $(BUILD)/selftest
 
@@ -50,6 +60,12 @@ check: $(BUILD)/selftest $(BUILD)/fusion-bench
 
 baseline: $(BUILD)/fusion-bench
 	./$(BUILD)/fusion-bench suite --write-baseline baseline.txt
+
+format:
+	$(CLANG_FORMAT) -i $(SOURCES)
+
+format-check:
+	$(CLANG_FORMAT) --dry-run --Werror $(SOURCES)
 
 clean:
 	rm -rf $(BUILD)

@@ -21,9 +21,7 @@ namespace {
 int gFailures = 0;
 int gChecks = 0;
 
-void checkNear(
-	const char* what, double got, double want, double tol, int line
-) {
+void checkNear(const char* what, double got, double want, double tol, int line) {
 	gChecks++;
 	if (!(std::fabs(got - want) <= tol)) {
 		std::fprintf(
@@ -250,7 +248,7 @@ void testDeterminism() {
 	bool identical = true;
 	for (size_t i = 0; i < a.samples.size(); i++) {
 		identical = identical && a.samples[i].gyr.x == b.samples[i].gyr.x
-			&& a.samples[i].acc.z == b.samples[i].acc.z;
+				 && a.samples[i].acc.z == b.samples[i].acc.z;
 	}
 	TRUE_(identical);
 
@@ -260,7 +258,7 @@ void testDeterminism() {
 	bool sameRun = r1.est.size() == r2.est.size();
 	for (size_t i = 0; sameRun && i < r1.est.size(); i++) {
 		sameRun = r1.est[i].w == r2.est[i].w && r1.est[i].x == r2.est[i].x
-			&& r1.est[i].y == r2.est[i].y && r1.est[i].z == r2.est[i].z;
+			   && r1.est[i].y == r2.est[i].y && r1.est[i].z == r2.est[i].z;
 	}
 	TRUE_(sameRun);
 

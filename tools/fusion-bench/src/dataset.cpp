@@ -131,15 +131,11 @@ bool loadDataset(const std::string& path, Dataset& out, std::string& error) {
 		}
 
 		Sample s;
-		s.tUs = static_cast<uint64_t>(
-			std::strtoull(row[idx.t].c_str(), nullptr, 10)
-		);
+		s.tUs = static_cast<uint64_t>(std::strtoull(row[idx.t].c_str(), nullptr, 10));
 		s.acc = Vec3{field(row, idx.ax), field(row, idx.ay), field(row, idx.az)};
 		s.gyr = Vec3{field(row, idx.gx), field(row, idx.gy), field(row, idx.gz)};
 		if (out.hasMag) {
-			s.mag = Vec3{
-				field(row, idx.mx), field(row, idx.my), field(row, idx.mz)
-			};
+			s.mag = Vec3{field(row, idx.mx), field(row, idx.my), field(row, idx.mz)};
 		}
 		if (out.hasGroundTruth) {
 			s.gt = qNorm(Quat{
@@ -166,8 +162,7 @@ bool loadDataset(const std::string& path, Dataset& out, std::string& error) {
 		d.reserve(out.samples.size() - 1);
 		for (size_t i = 1; i < out.samples.size(); i++) {
 			d.push_back(
-				static_cast<double>(out.samples[i].tUs - out.samples[i - 1].tUs)
-				* 1e-6
+				static_cast<double>(out.samples[i].tUs - out.samples[i - 1].tUs) * 1e-6
 			);
 		}
 		std::sort(d.begin(), d.end());
@@ -229,7 +224,12 @@ bool saveDataset(const std::string& path, const Dataset& ds, std::string& error)
 		o << buf;
 		if (ds.hasMag) {
 			std::snprintf(
-				buf, sizeof(buf), ",%.6f,%.6f,%.6f", s.mag.x, s.mag.y, s.mag.z
+				buf,
+				sizeof(buf),
+				",%.6f,%.6f,%.6f",
+				s.mag.x,
+				s.mag.y,
+				s.mag.z
 			);
 			o << buf;
 		}

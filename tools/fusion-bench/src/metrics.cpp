@@ -128,9 +128,7 @@ RunResult runFusion(const Dataset& ds, const BenchParams& p) {
 
 	vqf_real_t bias[3];
 	vqf.getBiasEstimate(bias);
-	r.finalBiasDps = Vec3{
-		rad2deg(bias[0]), rad2deg(bias[1]), rad2deg(bias[2])
-	};
+	r.finalBiasDps = Vec3{rad2deg(bias[0]), rad2deg(bias[1]), rad2deg(bias[2])};
 	if (!ds.samples.empty()) {
 		r.magDistFraction
 			= static_cast<double>(magDist) / static_cast<double>(ds.samples.size());
@@ -145,8 +143,8 @@ Metrics computeMetrics(const Dataset& ds, const RunResult& run) {
 	m.sampleCount = ds.samples.size();
 	m.durationSec = ds.durationSec();
 	m.sampleRateHz = m.durationSec > 0
-		? static_cast<double>(m.sampleCount - 1) / m.durationSec
-		: 0.0;
+					   ? static_cast<double>(m.sampleCount - 1) / m.durationSec
+					   : 0.0;
 	m.firstRestSec = run.firstRestSec;
 	m.finalBiasDps = std::sqrt(
 		run.finalBiasDps.x * run.finalBiasDps.x
@@ -172,7 +170,8 @@ Metrics computeMetrics(const Dataset& ds, const RunResult& run) {
 	std::vector<bool> atRest(n, false);
 	{
 		const size_t w = std::max<size_t>(
-			2, static_cast<size_t>(std::lround(0.5 / std::max(ds.gyrTs, 1e-6)))
+			2,
+			static_cast<size_t>(std::lround(0.5 / std::max(ds.gyrTs, 1e-6)))
 		);
 		for (size_t i = 0; i < n; i++) {
 			const size_t begin = (i > w / 2) ? i - w / 2 : 0;
@@ -193,10 +192,9 @@ Metrics computeMetrics(const Dataset& ds, const RunResult& run) {
 				worst = std::max(worst, std::fabs(ds.samples[k].gyr.y - my));
 				worst = std::max(worst, std::fabs(ds.samples[k].gyr.z - mz));
 			}
-			const double meanMagDps
-				= rad2deg(std::sqrt(mx * mx + my * my + mz * mz));
-			atRest[i] = rad2deg(worst) < kRestVariationDps
-				&& meanMagDps < kRestMagnitudeDps;
+			const double meanMagDps = rad2deg(std::sqrt(mx * mx + my * my + mz * mz));
+			atRest[i]
+				= rad2deg(worst) < kRestVariationDps && meanMagDps < kRestMagnitudeDps;
 		}
 	}
 
@@ -224,8 +222,7 @@ Metrics computeMetrics(const Dataset& ds, const RunResult& run) {
 	if (bestLen >= 2) {
 		m.restSecondsUsed
 			= static_cast<double>(
-				  ds.samples[bestBegin + bestLen - 1].tUs
-				  - ds.samples[bestBegin].tUs
+				  ds.samples[bestBegin + bestLen - 1].tUs - ds.samples[bestBegin].tUs
 			  )
 			* 1e-6;
 	}
@@ -255,9 +252,7 @@ Metrics computeMetrics(const Dataset& ds, const RunResult& run) {
 		std::vector<double> step;
 		step.reserve(bestLen - 1);
 		for (size_t i = bestBegin + 1; i < bestBegin + bestLen; i++) {
-			step.push_back(
-				rad2deg(qAngle(qMul(run.est[i], qConj(run.est[i - 1]))))
-			);
+			step.push_back(rad2deg(qAngle(qMul(run.est[i], qConj(run.est[i - 1])))));
 		}
 		m.jitterDegRms = rms(step);
 	}
@@ -333,9 +328,7 @@ std::string metricsToJson(const Metrics& m) {
 		o << buf;
 	};
 
-	std::snprintf(
-		buf, sizeof(buf), "  \"dataset\": \"%s\",\n", m.dataset.c_str()
-	);
+	std::snprintf(buf, sizeof(buf), "  \"dataset\": \"%s\",\n", m.dataset.c_str());
 	o << buf;
 	std::snprintf(
 		buf,

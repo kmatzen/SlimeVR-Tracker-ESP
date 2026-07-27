@@ -145,7 +145,8 @@ void collectKeys(
 ) {
 	if (m.hasDriftEstimate) {
 		out.emplace_back(
-			caseName + "/heading_drift_deg_per_min", m.headingDriftDegPerMin
+			caseName + "/heading_drift_deg_per_min",
+			m.headingDriftDegPerMin
 		);
 		out.emplace_back(caseName + "/jitter_deg_rms", m.jitterDegRms);
 	}
@@ -154,11 +155,10 @@ void collectKeys(
 		out.emplace_back(caseName + "/total_error_deg_rms", m.totalErrorDegRms);
 		out.emplace_back(caseName + "/heading_error_deg_rms", m.headingErrorDegRms);
 		out.emplace_back(
-			caseName + "/inclination_error_deg_rms", m.inclinationErrorDegRms
+			caseName + "/inclination_error_deg_rms",
+			m.inclinationErrorDegRms
 		);
-		out.emplace_back(
-			caseName + "/final_heading_error_deg", m.finalHeadingErrorDeg
-		);
+		out.emplace_back(caseName + "/final_heading_error_deg", m.finalHeadingErrorDeg);
 	}
 }
 
@@ -243,8 +243,12 @@ int cmdSuite(int argc, char** argv) {
 				tol = 1e-3;
 			}
 			std::snprintf(
-				buf, sizeof(buf), "%-46s %12.6f %12.6f\n",
-				kv.first.c_str(), kv.second, tol
+				buf,
+				sizeof(buf),
+				"%-46s %12.6f %12.6f\n",
+				kv.first.c_str(),
+				kv.second,
+				tol
 			);
 			o << buf;
 		}
@@ -259,11 +263,22 @@ int cmdSuite(int argc, char** argv) {
 			return 1;
 		}
 		int failures = 0;
-		std::printf("\n%-46s %12s %12s %12s\n", "metric", "baseline", "current", "delta");
+		std::printf(
+			"\n%-46s %12s %12s %12s\n",
+			"metric",
+			"baseline",
+			"current",
+			"delta"
+		);
 		for (const auto& kv : values) {
 			auto it = base.find(kv.first);
 			if (it == base.end()) {
-				std::printf("%-46s %12s %12.6f   (new)\n", kv.first.c_str(), "-", kv.second);
+				std::printf(
+					"%-46s %12s %12.6f   (new)\n",
+					kv.first.c_str(),
+					"-",
+					kv.second
+				);
 				continue;
 			}
 			double delta = kv.second - it->second.value;

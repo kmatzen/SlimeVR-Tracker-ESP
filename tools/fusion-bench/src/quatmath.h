@@ -120,9 +120,7 @@ inline double vAngle(const Vec3& a, const Vec3& b) {
 // synthetic ground truth is limited by the trajectory definition rather than by
 // integration error.
 inline Quat qIntegrate(const Quat& q, const Vec3& omega, double dt) {
-	double n = std::sqrt(
-		omega.x * omega.x + omega.y * omega.y + omega.z * omega.z
-	);
+	double n = std::sqrt(omega.x * omega.x + omega.y * omega.y + omega.z * omega.z);
 	if (n < 1e-12) {
 		return q;
 	}

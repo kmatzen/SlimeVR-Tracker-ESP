@@ -143,7 +143,9 @@ bool generate(
 		// reaction to gravity; rotate it into the body frame.
 		const Vec3 la = linAccAt(traj, t);
 		const Vec3 sfWorld{
-			la.x + gravityWorld.x, la.y + gravityWorld.y, la.z + gravityWorld.z
+			la.x + gravityWorld.x,
+			la.y + gravityWorld.y,
+			la.z + gravityWorld.z
 		};
 		const Vec3 accTrue = qRotateInv(q, sfWorld);
 		const Vec3 magTrue = qRotateInv(q, magWorld);

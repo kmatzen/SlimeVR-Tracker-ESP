@@ -26,11 +26,11 @@ struct SynthParams {
 
 	// Error model. Defaults are representative of a consumer MEMS IMU after
 	// the firmware's existing rest-gated bias calibration has run.
-	double gyroBiasDps = 0.15;      // constant gyroscope bias, deg/s
-	double gyroNoiseDps = 0.03;     // per-sample white noise, deg/s
-	double gyroScaleErr = 0.0;      // fractional, e.g. 0.01 for 1%
-	double accelBias = 0.02;        // constant accelerometer bias, m/s^2
-	double accelNoise = 0.02;       // per-sample white noise, m/s^2
+	double gyroBiasDps = 0.15;  // constant gyroscope bias, deg/s
+	double gyroNoiseDps = 0.03;  // per-sample white noise, deg/s
+	double gyroScaleErr = 0.0;  // fractional, e.g. 0.01 for 1%
+	double accelBias = 0.02;  // constant accelerometer bias, m/s^2
+	double accelNoise = 0.02;  // per-sample white noise, m/s^2
 
 	// Emit a magnetometer column. The field is a clean, constant world-frame
 	// vector -- useful for exercising the 9-DoF path, not for claiming anything

@@ -321,3 +321,14 @@ the quaternion algebra is right, that the error decomposition separates heading
 from inclination correctly, and that runs are bit-reproducible. A benchmark
 whose own arithmetic is wrong is worse than no benchmark, because it produces
 confident numbers.
+
+## Formatting
+
+The repo's `format` CI job runs clang-format 17 over the whole tree, and
+formatting differs between clang-format versions, so pin it:
+
+```sh
+pip install clang-format==17.0.6
+make format        # apply
+make format-check  # verify, as CI does
+```
