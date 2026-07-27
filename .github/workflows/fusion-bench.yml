@@ -1,0 +1,63 @@
+name: fusion-bench
+
+# Runs the host-side fusion benchmark. This is the check that can actually fail
+# for a *behavioural* regression -- the existing build workflow only proves the
+# firmware compiles.
+#
+# The whole suite runs in under a second on synthetic data, so it is cheap
+# enough to sit on every PR.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'lib/vqf/**'
+      - 'src/sensors/**'
+      - 'tools/fusion-bench/**'
+      - '.github/workflows/fusion-bench.yml'
+  pull_request:
+    paths:
+      - 'lib/vqf/**'
+      - 'src/sensors/**'
+      - 'tools/fusion-bench/**'
+      - '.github/workflows/fusion-bench.yml'
+  workflow_dispatch:
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Tests the measuring instrument before trusting its output.
+      - name: Self-test the harness
+        run: make -C tools/fusion-bench test
+
+      - name: Run suite against baseline
+        id: suite
+        run: |
+          set -o pipefail
+          make -C tools/fusion-bench check 2>&1 | tee bench-output.txt
+
+      # Always publish the table, not just on failure: many changes here are
+      # trade-offs and a reviewer needs to see the trade, not a bare pass/fail.
+      - name: Publish metrics table
+        if: always()
+        run: |
+          {
+            echo '## fusion-bench'
+            echo
+            echo '```'
+            cat bench-output.txt || echo 'no output'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fusion-bench-report
+          path: |
+            tools/fusion-bench/build/report.json
+            bench-output.txt
+          if-no-files-found: warn
