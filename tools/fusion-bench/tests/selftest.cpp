@@ -6,6 +6,7 @@
 // worse than no benchmark, because it produces confident numbers.
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -329,6 +330,137 @@ void testGyroBiasProducesDrift() {
 	TRUE_(std::fabs(m.headingDriftDegPerMin) > 5.0);
 }
 
+void testRawCaptureFormat() {
+	// Exactly the shape the firmware's RawSampleLogger emits: raw integer
+	// counts, accelerometer and gyroscope on separate rows because they run at
+	// different rates, and scale factors in the header.
+	const std::string path = "build/_raw.csv";
+	{
+		std::ofstream o(path);
+		o << "# slimevr-imu-log v1\n";
+		o << "# sensor LSM6DSV\n";
+		o << "# acc_ts 0.00833333\n";
+		o << "# gyr_ts 0.00416667\n";
+		o << "# acc_scale 0.00119681\n";
+		o << "# gyr_scale 0.000610865\n";
+		o << "# note raw uncalibrated counts\n";
+		o << "t_us,ax,ay,az,gx,gy,gz\n";
+		o << "4166,,,,10,-20,30\n";
+		o << "8333,100,-200,8192,,,\n";
+		o << "# t_real 8400 acc_n 1 gyr_n 2\n";
+		o << "8333,,,,11,-21,31\n";
+		o << "12500,,,,12,-22,32\n";
+		o << "16666,101,-201,8193,,,\n";
+		o << "16666,,,,13,-23,33\n";
+	}
+
+	Dataset ds;
+	std::string err;
+	TRUE_(loadDataset(path, ds, err));
+	TRUE_(ds.samples.size() == 6);
+
+	// Header-declared rates must win over any inference from row spacing.
+	NEAR(ds.gyrTs, 0.00416667, 1e-9);
+	NEAR(ds.accTs, 0.00833333, 1e-9);
+
+	// Presence, not zero: an empty field means the sensor did not report here.
+	TRUE_(!ds.samples[0].hasAcc);
+	TRUE_(ds.samples[0].hasGyr);
+	TRUE_(ds.samples[1].hasAcc);
+	TRUE_(!ds.samples[1].hasGyr);
+
+	// Raw counts must be converted using the header's scale factors.
+	NEAR(ds.samples[0].gyr.x, 10 * 0.000610865, 1e-12);
+	NEAR(ds.samples[0].gyr.z, 30 * 0.000610865, 1e-12);
+	NEAR(ds.samples[1].acc.z, 8192 * 0.00119681, 1e-9);
+
+	// Comment lines in the middle of the data are skipped, not parsed as rows.
+	TRUE_(ds.samples[2].hasGyr);
+	NEAR(ds.samples[2].gyr.x, 11 * 0.000610865, 1e-12);
+
+	std::remove(path.c_str());
+}
+
+void testInterleavedMatchesSynchronous() {
+	// End-to-end: take a clean stationary dataset and re-express it the way a
+	// real capture arrives -- accelerometer and gyroscope on separate rows --
+	// then confirm the fusion still converges. This is the property the whole
+	// raw-logging path depends on, and it is not covered by any synchronous
+	// dataset.
+	SynthParams sp;
+	sp.durationSec = 30;
+	sp.rateHz = 250;
+	sp.gyroBiasDps = 0.0;
+	sp.gyroNoiseDps = 0.0;
+	sp.accelBias = 0.0;
+	sp.accelNoise = 0.0;
+
+	Dataset sync;
+	std::string err;
+	TRUE_(generate("static", sp, sync, err));
+
+	Dataset split = sync;
+	split.samples.clear();
+	split.samples.reserve(sync.samples.size() * 2);
+	for (const Sample& s : sync.samples) {
+		Sample a = s;
+		a.hasAcc = true;
+		a.hasGyr = false;
+		a.hasMag = false;
+		Sample g = s;
+		g.hasAcc = false;
+		g.hasGyr = true;
+		g.hasMag = false;
+		split.samples.push_back(a);
+		split.samples.push_back(g);
+	}
+
+	Metrics ms = computeMetrics(sync, runFusion(sync, BenchParams{}));
+	Metrics mi = computeMetrics(split, runFusion(split, BenchParams{}));
+
+	// Both must find the tracker stationary and level.
+	TRUE_(mi.hasDriftEstimate);
+	NEAR(mi.headingDriftDegPerMin, 0.0, 0.01);
+	NEAR(mi.tiltErrorDegRms, 0.0, 0.05);
+	TRUE_(mi.firstRestSec >= 0.0);
+
+	// And should agree closely with the synchronous run on the same input.
+	NEAR(mi.headingDriftDegPerMin, ms.headingDriftDegPerMin, 0.05);
+	NEAR(mi.tiltErrorDegRms, ms.tiltErrorDegRms, 0.05);
+}
+
+void testPresenceSurvivesRoundTrip() {
+	// Trailing empty fields are the easy thing to lose: a naive CSV split drops
+	// them, which would silently turn an accelerometer row into a malformed one.
+	SynthParams sp;
+	sp.durationSec = 1;
+	sp.rateHz = 100;
+	Dataset ds;
+	std::string err;
+	TRUE_(generate("tumble", sp, ds, err));
+
+	for (size_t i = 0; i < ds.samples.size(); i++) {
+		const bool accRow = (i % 2) == 0;
+		ds.samples[i].hasAcc = accRow;
+		ds.samples[i].hasGyr = !accRow;
+	}
+
+	const std::string path = "build/_presence.csv";
+	TRUE_(saveDataset(path, ds, err));
+
+	Dataset back;
+	TRUE_(loadDataset(path, back, err));
+	TRUE_(back.samples.size() == ds.samples.size());
+
+	bool ok = true;
+	for (size_t i = 0; i < ds.samples.size(); i++) {
+		ok = ok && back.samples[i].hasAcc == ds.samples[i].hasAcc
+		  && back.samples[i].hasGyr == ds.samples[i].hasGyr;
+	}
+	TRUE_(ok);
+	std::remove(path.c_str());
+}
+
 }  // namespace
 
 int main() {
@@ -341,6 +473,9 @@ int main() {
 	testDeterminism();
 	testCleanStaticConverges();
 	testGyroBiasProducesDrift();
+	testRawCaptureFormat();
+	testInterleavedMatchesSynchronous();
+	testPresenceSurvivesRoundTrip();
 
 	if (gFailures == 0) {
 		std::printf("selftest: %d checks passed\n", gChecks);

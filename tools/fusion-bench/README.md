@@ -148,10 +148,9 @@ These are the physical protocols. They are deliberately over-specified: the
 value of a bench test is entirely in it being repeatable, and "hold it still for
 a bit" is not repeatable.
 
-**Prerequisite:** all of these need raw sample logging in the firmware, which
-does not exist yet — see the raw-logging issue. Until then the suite above runs
-on synthetic data only. Do not skip the prerequisite by eyeballing the GUI;
-that is the situation this tool exists to replace.
+**First, capture a dataset** — see "Capturing from a tracker" below. Do not
+substitute eyeballing the GUI; that is the situation this tool exists to
+replace.
 
 General rules for every test:
 
@@ -258,6 +257,83 @@ Two ways to get a real reference without a mocap lab:
   and log both. Sub-degree, free if you already have base stations, and it
   captures real human motion rather than bench motion.
 
+## Capturing from a tracker
+
+The firmware can stream raw samples over serial in exactly the format below, so
+capturing a dataset is just redirecting the serial port to a file. There is no
+converter step and no host-side dependency.
+
+### 1. Build with logging enabled
+
+Add to the `[env]` section of `platformio.ini`, or pass via
+`PLATFORMIO_BUILD_FLAGS`:
+
+```ini
+build_flags =
+  ${env.build_flags}
+  -D RAW_SAMPLE_LOGGING
+  -D serialBaudRate=921600
+```
+
+Raise the baud rate. An LSM6DSV at 240 Hz gyro / 120 Hz accel produces roughly
+9 KB/s, and 115200 baud carries about 11.5 KB/s — it fits, but with only ~20%
+headroom, and a faster IMU will not fit at all. **If the link saturates, serial
+writes block and the sample timing is perturbed, which corrupts the very thing
+you are measuring.** 921600 leaves plenty of margin.
+
+Only one IMU is logged. If your board has two, select which with
+`-D RAW_SAMPLE_LOGGING_SENSOR_ID=1` (default 0).
+
+This is a debug build. Do not ship it — the serial stream runs continuously.
+
+### 2. Capture
+
+```sh
+# Linux / macOS. Substitute your port; 'ls /dev/tty.*' or 'ls /dev/ttyUSB*'.
+stty -f /dev/tty.usbserial-0001 921600 raw
+cat /dev/tty.usbserial-0001 > capture.csv
+```
+
+Let it run for the duration the test calls for, then Ctrl-C.
+
+### 3. Run
+
+```sh
+./build/fusion-bench run capture.csv
+```
+
+If the capture picked up ordinary firmware log lines, they are skipped and the
+count is reported on stderr. A large skip count means something is wrong —
+usually a saturated serial link — and the numbers should not be trusted.
+
+### What gets logged, and why raw
+
+Raw uncalibrated integer counts, with the scale factors in the header.
+
+- Raw is what the sensor actually produced. Everything else is derived from it,
+  so a raw capture can be replayed under *different* calibration — which is the
+  entire point when the thing being evaluated is the calibration, as in the
+  `restThAcc` example above.
+- Formatting integers is much cheaper on an ESP8266 than formatting floats, and
+  this runs in the sample path. Perturbing sample timing would corrupt the
+  measurement.
+
+Note this means a replay measures the **uncalibrated** sensor. It will show more
+drift than the tracker actually exhibits, because the runtime bias calibration
+is not applied. That is deliberate: it isolates the sensor from the calibration
+so the two can be evaluated separately.
+
+Accelerometer and gyroscope rows are separate, because the two run at different
+rates (120 Hz and 240 Hz on an LSM6DSV) and resampling them onto a common tick
+would bake an assumption into the data instead of leaving it to the analysis.
+
+Row timestamps are **nominal** — derived from the configured sample period —
+because that is what the on-device fusion integrates, so replaying them
+reproduces what the filter saw. Periodic `# t_real` comments carry the true
+elapsed time alongside sample counts, so the configured and actual ODR can be
+compared. That difference is exactly the error the runtime sample-rate
+calibration exists to correct, and it is otherwise invisible.
+
 ## Dataset format
 
 Plain CSV with a small comment header. Diffable, hand-editable, trivially
@@ -276,8 +352,27 @@ Required: `t_us, ax, ay, az, gx, gy, gz`.
 Optional: `mx, my, mz` (magnetometer), `qw, qx, qy, qz` (reference orientation),
 `temp` (°C).
 
-Units are m/s² and rad/s — what VQF expects, so nothing is rescaled anywhere in
-the harness.
+Units are m/s² and rad/s by default — what VQF expects. A file may instead hold
+raw sensor counts and declare `# acc_scale` / `# gyr_scale` / `# mag_scale`
+header directives, which the reader multiplies through. This is what the
+firmware emits.
+
+**An empty field means "no sample", which is not the same as a sample reading
+zero.** Real IMUs run the accelerometer and gyroscope at different rates, so a
+capture interleaves rows:
+
+```
+t_us,ax,ay,az,gx,gy,gz
+4166,,,,10,-20,30
+8333,100,-200,8192,,,
+8333,,,,11,-21,31
+```
+
+Each sensor is updated only on rows that carry it. Repeating the last
+accelerometer sample onto every gyroscope row would double-count the
+accelerometer correction and change what the filter does. For the same reason
+the gyroscope timestep is measured between consecutive *gyroscope* rows, not
+between consecutive rows of any kind.
 
 Timestamps are used as-is rather than assuming the nominal rate, so jitter and
 dropped samples in a real capture are modelled rather than silently smoothed

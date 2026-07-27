@@ -52,7 +52,12 @@
 #endif
 
 #define serialDebug false  // Set to true to get Serial output for debugging
+// Overridable so a raw-sample-logging build can raise it -- the raw stream is
+// close to the 115200 budget on an LSM6DSV and exceeds it on faster IMUs.
+// See tools/fusion-bench/README.md.
+#ifndef serialBaudRate
 #define serialBaudRate 115200
+#endif
 #define LED_INTERVAL_STANDBY 10000
 #define PRINT_STATE_EVERY_MS 60000
 

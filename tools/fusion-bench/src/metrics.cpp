@@ -70,7 +70,8 @@ RunResult runFusion(const Dataset& ds, const BenchParams& p) {
 
 	size_t magDist = 0;
 	uint64_t t0 = ds.samples.front().tUs;
-	uint64_t prevT = t0;
+	uint64_t prevGyrT = t0;
+	bool haveGyrT = false;
 
 	for (size_t i = 0; i < ds.samples.size(); i++) {
 		const Sample& s = ds.samples[i];
@@ -78,14 +79,23 @@ RunResult runFusion(const Dataset& ds, const BenchParams& p) {
 		// Use the log's own timestamps rather than the nominal rate, so that
 		// jitter and dropped samples in a real capture are modelled rather than
 		// silently smoothed away.
+		//
+		// Measured between consecutive *gyroscope* rows. A real capture
+		// interleaves accelerometer and gyroscope rows at different rates, so
+		// the gap to the previous row of any kind is not the gyroscope's
+		// timestep and feeding it to VQF would misstate the integration
+		// interval on every sample.
 		double dt = ds.gyrTs;
-		if (i > 0) {
-			dt = static_cast<double>(s.tUs - prevT) * 1e-6;
+		if (s.hasGyr && haveGyrT) {
+			dt = static_cast<double>(s.tUs - prevGyrT) * 1e-6;
 			if (dt <= 0) {
 				dt = ds.gyrTs;
 			}
 		}
-		prevT = s.tUs;
+		if (s.hasGyr) {
+			prevGyrT = s.tUs;
+			haveGyrT = true;
+		}
 
 		vqf_real_t acc[3] = {
 			static_cast<vqf_real_t>(s.acc.x),
@@ -98,8 +108,11 @@ RunResult runFusion(const Dataset& ds, const BenchParams& p) {
 			static_cast<vqf_real_t>(s.gyr.z),
 		};
 
-		// Order matches SensorFusion::update9D / update6D.
-		if (useMag) {
+		// Order matches SensorFusion::update9D / update6D. Each sensor is
+		// updated only on rows that actually carry it -- feeding a repeated
+		// accelerometer sample on every gyroscope row would double-count the
+		// accelerometer correction and change what the filter does.
+		if (useMag && s.hasMag) {
 			vqf_real_t mag[3] = {
 				static_cast<vqf_real_t>(s.mag.x),
 				static_cast<vqf_real_t>(s.mag.y),
@@ -107,8 +120,12 @@ RunResult runFusion(const Dataset& ds, const BenchParams& p) {
 			};
 			vqf.updateMag(mag);
 		}
-		vqf.updateAcc(acc);
-		vqf.updateGyr(gyr, static_cast<vqf_real_t>(dt));
+		if (s.hasAcc) {
+			vqf.updateAcc(acc);
+		}
+		if (s.hasGyr) {
+			vqf.updateGyr(gyr, static_cast<vqf_real_t>(dt));
+		}
 
 		vqf_real_t q[4];
 		if (useMag) {
@@ -167,20 +184,34 @@ Metrics computeMetrics(const Dataset& ds, const RunResult& run) {
 	// non-zero rate -- thresholding the magnitude would classify exactly the
 	// trackers we most want to measure as "moving" and silently skip them.
 	// Variation is near zero whenever the tracker is still, whatever the bias.
+	// Computed over gyroscope-bearing rows only. In an interleaved capture the
+	// accelerometer rows carry no angular rate, and treating their zeros as
+	// measurements would make every tracker look perfectly still.
+	std::vector<size_t> gyrRows;
+	gyrRows.reserve(n);
+	for (size_t i = 0; i < n; i++) {
+		if (ds.samples[i].hasGyr) {
+			gyrRows.push_back(i);
+		}
+	}
+
 	std::vector<bool> atRest(n, false);
-	{
+	if (!gyrRows.empty()) {
+		const size_t g = gyrRows.size();
 		const size_t w = std::max<size_t>(
 			2,
 			static_cast<size_t>(std::lround(0.5 / std::max(ds.gyrTs, 1e-6)))
 		);
-		for (size_t i = 0; i < n; i++) {
-			const size_t begin = (i > w / 2) ? i - w / 2 : 0;
-			const size_t end = std::min(n, begin + w);
+		std::vector<bool> gyrAtRest(g, false);
+		for (size_t j = 0; j < g; j++) {
+			const size_t begin = (j > w / 2) ? j - w / 2 : 0;
+			const size_t end = std::min(g, begin + w);
 			double mx = 0, my = 0, mz = 0;
 			for (size_t k = begin; k < end; k++) {
-				mx += ds.samples[k].gyr.x;
-				my += ds.samples[k].gyr.y;
-				mz += ds.samples[k].gyr.z;
+				const Vec3& gv = ds.samples[gyrRows[k]].gyr;
+				mx += gv.x;
+				my += gv.y;
+				mz += gv.z;
 			}
 			const double cnt = static_cast<double>(end - begin);
 			mx /= cnt;
@@ -188,13 +219,27 @@ Metrics computeMetrics(const Dataset& ds, const RunResult& run) {
 			mz /= cnt;
 			double worst = 0;
 			for (size_t k = begin; k < end; k++) {
-				worst = std::max(worst, std::fabs(ds.samples[k].gyr.x - mx));
-				worst = std::max(worst, std::fabs(ds.samples[k].gyr.y - my));
-				worst = std::max(worst, std::fabs(ds.samples[k].gyr.z - mz));
+				const Vec3& gv = ds.samples[gyrRows[k]].gyr;
+				worst = std::max(worst, std::fabs(gv.x - mx));
+				worst = std::max(worst, std::fabs(gv.y - my));
+				worst = std::max(worst, std::fabs(gv.z - mz));
 			}
 			const double meanMagDps = rad2deg(std::sqrt(mx * mx + my * my + mz * mz));
-			atRest[i]
+			gyrAtRest[j]
 				= rad2deg(worst) < kRestVariationDps && meanMagDps < kRestMagnitudeDps;
+		}
+
+		// Project back onto every row: a row inherits the state of the most
+		// recent gyroscope row, so a rest segment stays contiguous across the
+		// interleaved accelerometer rows inside it.
+		bool current = gyrAtRest[0];
+		size_t next = 0;
+		for (size_t i = 0; i < n; i++) {
+			if (next < g && gyrRows[next] == i) {
+				current = gyrAtRest[next];
+				next++;
+			}
+			atRest[i] = current;
 		}
 	}
 
@@ -265,11 +310,18 @@ Metrics computeMetrics(const Dataset& ds, const RunResult& run) {
 	tilt.reserve(n);
 	const Vec3 up{0, 0, 1};
 	for (size_t i = 0; i < n; i++) {
+		// Only rows that actually carry an accelerometer sample. A zero vector
+		// has no direction, so including empty rows would be meaningless.
+		if (!ds.samples[i].hasAcc) {
+			continue;
+		}
 		Vec3 world = qRotate(run.est[i], ds.samples[i].acc);
 		tilt.push_back(rad2deg(vAngle(world, up)));
 	}
-	m.tiltErrorDegRms = rms(tilt);
-	m.tiltErrorDegMax = *std::max_element(tilt.begin(), tilt.end());
+	if (!tilt.empty()) {
+		m.tiltErrorDegRms = rms(tilt);
+		m.tiltErrorDegMax = *std::max_element(tilt.begin(), tilt.end());
+	}
 
 	// --- Ground truth ------------------------------------------------------
 	if (!ds.hasGroundTruth) {

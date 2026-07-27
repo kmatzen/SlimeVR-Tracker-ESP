@@ -32,6 +32,7 @@
 #include "../../sensorinterface/SensorInterface.h"
 #include "../RestCalibrationDetector.h"
 #include "../sensor.h"
+#include "RawSampleLogger.h"
 #include "TempGradientCalculator.h"
 #include "imuconsts.h"
 #include "motionprocessing/types.h"
@@ -107,6 +108,11 @@ class SoftFusionSensor : public Sensor {
 	}};
 
 	void processAccelSample(const RawSensorT xyz[3], const sensor_real_t timeDelta) {
+		// Logged before scaling, so the capture holds what the sensor actually
+		// produced rather than what the current calibration made of it.
+		// Compiled away entirely unless RAW_SAMPLE_LOGGING is defined.
+		m_rawLogger.logAccel(xyz);
+
 		sensor_real_t accelData[]
 			= {static_cast<sensor_real_t>(xyz[0]),
 			   static_cast<sensor_real_t>(xyz[1]),
@@ -120,6 +126,8 @@ class SoftFusionSensor : public Sensor {
 	}
 
 	void processGyroSample(const RawSensorT xyz[3], const sensor_real_t timeDelta) {
+		m_rawLogger.logGyro(xyz);
+
 		sensor_real_t gyroData[]
 			= {static_cast<sensor_real_t>(xyz[0]),
 			   static_cast<sensor_real_t>(xyz[1]),
@@ -331,6 +339,15 @@ public:
 
 		calibrator.checkStartupCalibration();
 
+		m_rawLogger.begin(
+			sensorId,
+			SensorType::Name,
+			calibrator.getAccelTimestep(),
+			calibrator.getGyroTimestep(),
+			Consts::AScale,
+			Consts::GScale
+		);
+
 		if constexpr (Consts::SupportsMags) {
 			magDriver.init(
 				SoftFusion::MagInterface{
@@ -387,6 +404,9 @@ public:
 	RestCalibrationDetector calibrationDetector;
 
 	SoftFusion::MagDriver magDriver;
+
+	// Empty and free unless RAW_SAMPLE_LOGGING is defined.
+	RawSampleLogger<Consts> m_rawLogger;
 
 	static bool checkPresent(const RegisterInterface& imuInterface) {
 		I2Cdev::readTimeout = 100;

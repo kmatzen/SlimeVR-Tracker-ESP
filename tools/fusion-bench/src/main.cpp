@@ -364,6 +364,19 @@ int cmdRun(int argc, char** argv) {
 		return 1;
 	}
 
+	// A serial capture can contain firmware log output interleaved with the
+	// data. Those lines are skipped, but say so -- a capture that quietly lost
+	// half its samples would still produce confident-looking numbers.
+	if (ds.skippedLines > 0) {
+		std::fprintf(
+			stderr,
+			"note: skipped %zu non-data line(s) in %s (kept %zu samples)\n",
+			ds.skippedLines,
+			argv[2],
+			ds.samples.size()
+		);
+	}
+
 	RunResult run = runFusion(ds, parseBenchParams(argc, argv));
 	Metrics m = computeMetrics(ds, run);
 	std::string j = metricsToJson(m);

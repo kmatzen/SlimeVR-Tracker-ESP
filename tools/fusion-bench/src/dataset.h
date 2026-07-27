@@ -36,6 +36,14 @@ struct Sample {
 	Vec3 mag;
 	Quat gt;
 	double temp = 0;
+	// A row may carry only some of the sensors. Real IMUs run their
+	// accelerometer and gyroscope at different rates (120 Hz and 240 Hz on an
+	// LSM6DSV), so a capture interleaves rows rather than presenting a single
+	// synchronised stream. An empty field means "no sample here", which is not
+	// the same as a sample that happens to read zero.
+	bool hasAcc = false;
+	bool hasGyr = false;
+	bool hasMag = false;
 };
 
 struct Dataset {
@@ -46,9 +54,19 @@ struct Dataset {
 	double gyrTs = 0;
 	double accTs = 0;
 	double magTs = 0;
+	// Raw-count to physical-unit conversion, as emitted by the firmware's raw
+	// sample logger. 1.0 means the file already holds physical units, which is
+	// the case for synthetic datasets and for imported public datasets.
+	double accScale = 1.0;
+	double gyrScale = 1.0;
+	double magScale = 1.0;
 	bool hasMag = false;
 	bool hasGroundTruth = false;
 	bool hasTemp = false;
+	// Lines that were not data rows -- firmware log output mixed into the
+	// capture, or a truncated final row. Reported so a mangled capture cannot
+	// pass for a clean one.
+	size_t skippedLines = 0;
 	std::vector<Sample> samples;
 
 	double durationSec() const {

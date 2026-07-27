@@ -1,6 +1,7 @@
 #include "dataset.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -18,14 +19,28 @@ std::string trim(const std::string& s) {
 	return s.substr(b, e - b + 1);
 }
 
+// Preserves empty fields, including trailing ones. A getline-based split drops
+// trailing empties, which would silently mangle an accelerometer row such as
+// "1000,123,-456,16384,,," -- exactly the rows the firmware's raw logger emits.
 std::vector<std::string> split(const std::string& s, char sep) {
 	std::vector<std::string> out;
-	std::string cur;
-	std::istringstream is(s);
-	while (std::getline(is, cur, sep)) {
-		out.push_back(trim(cur));
+	size_t start = 0;
+	while (true) {
+		size_t p = s.find(sep, start);
+		if (p == std::string::npos) {
+			out.push_back(trim(s.substr(start)));
+			break;
+		}
+		out.push_back(trim(s.substr(start, p - start)));
+		start = p + 1;
 	}
 	return out;
+}
+
+// A field counts as present only if it exists and is non-empty. An empty field
+// means "no sample", which is distinct from a sample that reads zero.
+bool present(const std::vector<std::string>& row, int idx) {
+	return idx >= 0 && idx < static_cast<int>(row.size()) && !row[idx].empty();
 }
 
 // Index of `name` in the header, or -1.
@@ -88,6 +103,12 @@ bool loadDataset(const std::string& path, Dataset& out, std::string& error) {
 				hs >> out.accTs;
 			} else if (key == "mag_ts") {
 				hs >> out.magTs;
+			} else if (key == "acc_scale") {
+				hs >> out.accScale;
+			} else if (key == "gyr_scale") {
+				hs >> out.gyrScale;
+			} else if (key == "mag_scale") {
+				hs >> out.magScale;
 			} else if (key == "note") {
 				std::string rest;
 				std::getline(hs, rest);
@@ -97,6 +118,13 @@ bool loadDataset(const std::string& path, Dataset& out, std::string& error) {
 		}
 
 		if (cols.empty()) {
+			// A real capture is a serial stream, so ordinary firmware log lines
+			// can appear before the header. Wait for the actual column row
+			// rather than treating the first non-comment line as one.
+			if (t.rfind("t_us", 0) != 0) {
+				out.skippedLines++;
+				continue;
+			}
 			cols = split(t, ',');
 			if (colIndex(cols, "t_us") < 0 || colIndex(cols, "ax") < 0
 				|| colIndex(cols, "gx") < 0) {
@@ -124,18 +152,50 @@ bool loadDataset(const std::string& path, Dataset& out, std::string& error) {
 			continue;
 		}
 
+		// Log lines can also appear mid-stream, and a capture may be cut off
+		// part-way through a row. Skip anything that is not a well-formed data
+		// row and count it, rather than aborting the whole file -- but count it
+		// loudly, because silently discarding half a capture would be worse
+		// than failing.
+		if (t.empty() || !(std::isdigit(static_cast<unsigned char>(t[0])))) {
+			out.skippedLines++;
+			continue;
+		}
 		std::vector<std::string> row = split(t, ',');
 		if (row.size() < cols.size()) {
-			error = "short row at line " + std::to_string(lineNo);
-			return false;
+			out.skippedLines++;
+			continue;
 		}
 
 		Sample s;
 		s.tUs = static_cast<uint64_t>(std::strtoull(row[idx.t].c_str(), nullptr, 10));
-		s.acc = Vec3{field(row, idx.ax), field(row, idx.ay), field(row, idx.az)};
-		s.gyr = Vec3{field(row, idx.gx), field(row, idx.gy), field(row, idx.gz)};
-		if (out.hasMag) {
-			s.mag = Vec3{field(row, idx.mx), field(row, idx.my), field(row, idx.mz)};
+
+		s.hasAcc = present(row, idx.ax);
+		s.hasGyr = present(row, idx.gx);
+		s.hasMag = out.hasMag && present(row, idx.mx);
+
+		// Scales default to 1.0, so a file already in physical units is
+		// unaffected. A raw capture from the firmware carries its own.
+		if (s.hasAcc) {
+			s.acc = Vec3{
+				field(row, idx.ax) * out.accScale,
+				field(row, idx.ay) * out.accScale,
+				field(row, idx.az) * out.accScale,
+			};
+		}
+		if (s.hasGyr) {
+			s.gyr = Vec3{
+				field(row, idx.gx) * out.gyrScale,
+				field(row, idx.gy) * out.gyrScale,
+				field(row, idx.gz) * out.gyrScale,
+			};
+		}
+		if (s.hasMag) {
+			s.mag = Vec3{
+				field(row, idx.mx) * out.magScale,
+				field(row, idx.my) * out.magScale,
+				field(row, idx.mz) * out.magScale,
+			};
 		}
 		if (out.hasGroundTruth) {
 			s.gt = qNorm(Quat{
@@ -157,16 +217,27 @@ bool loadDataset(const std::string& path, Dataset& out, std::string& error) {
 	}
 
 	// Fall back to the median timestamp delta when the header omits the rates.
+	// Measured between consecutive *gyroscope* rows, not consecutive rows of any
+	// kind: in an interleaved capture the latter would report the interleaving
+	// period rather than either sensor's actual rate.
 	if (out.gyrTs <= 0) {
 		std::vector<double> d;
-		d.reserve(out.samples.size() - 1);
-		for (size_t i = 1; i < out.samples.size(); i++) {
-			d.push_back(
-				static_cast<double>(out.samples[i].tUs - out.samples[i - 1].tUs) * 1e-6
-			);
+		bool havePrev = false;
+		uint64_t prev = 0;
+		for (const Sample& s : out.samples) {
+			if (!s.hasGyr) {
+				continue;
+			}
+			if (havePrev) {
+				d.push_back(static_cast<double>(s.tUs - prev) * 1e-6);
+			}
+			prev = s.tUs;
+			havePrev = true;
 		}
-		std::sort(d.begin(), d.end());
-		out.gyrTs = d[d.size() / 2];
+		if (!d.empty()) {
+			std::sort(d.begin(), d.end());
+			out.gyrTs = d[d.size() / 2];
+		}
 	}
 	if (out.accTs <= 0) {
 		out.accTs = out.gyrTs;
@@ -209,20 +280,37 @@ bool saveDataset(const std::string& path, const Dataset& ds, std::string& error)
 
 	char buf[512];
 	for (const Sample& s : ds.samples) {
-		std::snprintf(
-			buf,
-			sizeof(buf),
-			"%llu,%.6f,%.6f,%.6f,%.9f,%.9f,%.9f",
-			static_cast<unsigned long long>(s.tUs),
-			s.acc.x,
-			s.acc.y,
-			s.acc.z,
-			s.gyr.x,
-			s.gyr.y,
-			s.gyr.z
-		);
+		std::snprintf(buf, sizeof(buf), "%llu", static_cast<unsigned long long>(s.tUs));
 		o << buf;
-		if (ds.hasMag) {
+		if (s.hasAcc) {
+			std::snprintf(
+				buf,
+				sizeof(buf),
+				",%.6f,%.6f,%.6f",
+				s.acc.x,
+				s.acc.y,
+				s.acc.z
+			);
+			o << buf;
+		} else {
+			o << ",,,";
+		}
+		if (s.hasGyr) {
+			std::snprintf(
+				buf,
+				sizeof(buf),
+				",%.9f,%.9f,%.9f",
+				s.gyr.x,
+				s.gyr.y,
+				s.gyr.z
+			);
+			o << buf;
+		} else {
+			o << ",,,";
+		}
+		if (ds.hasMag && !s.hasMag) {
+			o << ",,,";
+		} else if (ds.hasMag) {
 			std::snprintf(
 				buf,
 				sizeof(buf),

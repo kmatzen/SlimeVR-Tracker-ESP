@@ -138,6 +138,11 @@ bool generate(
 		Sample s;
 		s.tUs = static_cast<uint64_t>(std::llround(t * 1e6));
 		s.gt = q;
+		// Synthetic trajectories are synchronous: every row carries every
+		// sensor. Real captures interleave, which is why the flags exist.
+		s.hasAcc = true;
+		s.hasGyr = true;
+		s.hasMag = p.withMag;
 
 		// Specific force in the world frame is linear acceleration plus the
 		// reaction to gravity; rotate it into the body frame.
