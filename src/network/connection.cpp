@@ -279,6 +279,36 @@ void Connection::sendRotationData(
 	uint8_t accuracyInfo
 ) {
 	MUST(m_Connected);
+
+	// Stamp at the moment of sending rather than at sample time. The fusion
+	// filter integrates on its own nominal timebase and does not carry a
+	// wall-clock time per sample, so this is the earliest point where a real
+	// clock reading is available. It still removes everything downstream of
+	// here -- WiFi retries, buffering, scheduling -- which is the part that
+	// varies between trackers and therefore the part that skews the skeleton.
+	//
+	// The remaining error is the fixed sample-to-send latency, which is
+	// common-mode across trackers and so does not distort the pose. Removing
+	// that too means carrying a timestamp through the FIFO read, which is
+	// worth doing but is a change to the fusion path rather than the wire
+	// format.
+	if (m_ServerFeatures.has(ServerFeatures::PROTOCOL_SAMPLE_TIMESTAMPS)) {
+		MUST(sendPacket(
+			SendPacketType::RotationDataTimestamped,
+			RotationDataTimestampedPacket{
+				.sensorId = sensorId,
+				.dataType = dataType,
+				.x = quaternion->x,
+				.y = quaternion->y,
+				.z = quaternion->z,
+				.w = quaternion->w,
+				.accuracyInfo = accuracyInfo,
+				.timestampMicros = micros(),
+			}
+		));
+		return;
+	}
+
 	MUST(sendPacket(
 		SendPacketType::RotationData,
 		RotationDataPacket{
