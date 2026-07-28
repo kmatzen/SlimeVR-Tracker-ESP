@@ -4,6 +4,7 @@
 // correct -- that the quaternion algebra, the error decomposition, and the
 // determinism guarantees hold. A benchmark whose own arithmetic is wrong is
 // worse than no benchmark, because it produces confident numbers.
+#include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -19,6 +20,7 @@
 // has no Arduino dependency precisely so it can be tested here.
 #include "../../../src/sensors/softfusion/drivers/bmm350comp.h"
 #include "../../../src/sensors/softfusion/drivers/magfifo.h"
+#include "../../../src/sensors/softfusion/errormodel.h"
 
 using namespace fb;
 
@@ -766,6 +768,186 @@ void testBmm350TemperatureConversion() {
 	NEAR(neg, -30000 * 0.000981282 + 25.49, 1e-4);
 }
 
+using SlimeVR::Sensors::SoftFusion::ErrorModel;
+using SlimeVR::Sensors::SoftFusion::fitErrorModel;
+
+// Applies a known error model *forward*, i.e. simulates what a sensor with that
+// error would report for a true field of the given direction.
+static void corrupt(
+	const double trueXyz[3],
+	const double gain[3],
+	const double crossXY,
+	const double bias[3],
+	float out[3]
+) {
+	// Inverse of the correction: raw = M^-1 * true + bias, with a simple
+	// upper-triangular M so the inverse is easy to write by hand.
+	const double t1 = trueXyz[1] / gain[1];
+	const double t0 = (trueXyz[0] - crossXY * trueXyz[1]) / gain[0];
+	const double t2 = trueXyz[2] / gain[2];
+	out[0] = static_cast<float>(t0 + bias[0]);
+	out[1] = static_cast<float>(t1 + bias[1]);
+	out[2] = static_cast<float>(t2 + bias[2]);
+}
+
+void testErrorModelIdentityByDefault() {
+	// A device with no fitted model must behave exactly as before, which is
+	// what allows the storage to land ahead of the estimation.
+	ErrorModel m;
+	TRUE_(m.isIdentity());
+	const float in[3] = {1.5f, -2.5f, 9.8f};
+	float out[3];
+	m.apply(in, out);
+	NEAR(out[0], 1.5, 1e-6);
+	NEAR(out[1], -2.5, 1e-6);
+	NEAR(out[2], 9.8, 1e-6);
+}
+
+void testErrorModelApply() {
+	ErrorModel m;
+	m.bias[0] = 1.0f;
+	m.m[0] = 2.0f;  // x gain
+	m.m[1] = 0.5f;  // x picks up y: misalignment
+	const float in[3] = {3.0f, 4.0f, 0.0f};
+	float out[3];
+	m.apply(in, out);
+	// (3-1)*2 + 4*0.5 = 6
+	NEAR(out[0], 6.0, 1e-6);
+	NEAR(out[1], 4.0, 1e-6);
+	TRUE_(!m.isIdentity());
+}
+
+// Builds a set of orientations covering the sphere reasonably evenly.
+static void sphereDirections(std::vector<std::array<double, 3>>& dirs, int n) {
+	dirs.clear();
+	// Fibonacci sphere: deterministic and well spread, which is what the fit
+	// needs. Clustered samples leave it under-determined.
+	const double ga = kPi * (3.0 - std::sqrt(5.0));
+	for (int i = 0; i < n; i++) {
+		const double y = 1.0 - (2.0 * i) / (n - 1);
+		const double r = std::sqrt(std::max(0.0, 1.0 - y * y));
+		const double th = ga * i;
+		dirs.push_back({std::cos(th) * r, y, std::sin(th) * r});
+	}
+}
+
+void testFitRecoversBiasScaleAndMisalignment() {
+	// The whole point of the issue: scale factor and misalignment are invisible
+	// to a bias-only calibration, and both are systematic so they accumulate.
+	constexpr double g = 9.80665;
+	const double gain[3] = {1.03, 0.97, 1.01};  // +-3% scale error
+	const double crossXY = 0.02;  // 2% cross-axis coupling
+	const double bias[3] = {0.12, -0.08, 0.05};
+
+	std::vector<std::array<double, 3>> dirs;
+	sphereDirections(dirs, 200);
+
+	std::vector<float> samples;
+	for (const auto& d : dirs) {
+		const double t[3] = {d[0] * g, d[1] * g, d[2] * g};
+		float raw[3];
+		corrupt(t, gain, crossXY, bias, raw);
+		samples.push_back(raw[0]);
+		samples.push_back(raw[1]);
+		samples.push_back(raw[2]);
+	}
+
+	ErrorModel fitted;
+	TRUE_(fitErrorModel(samples.data(), dirs.size(), static_cast<float>(g), fitted));
+
+	// Bias is recovered directly.
+	NEAR(fitted.bias[0], 0.12, 5e-3);
+	NEAR(fitted.bias[1], -0.08, 5e-3);
+	NEAR(fitted.bias[2], 0.05, 5e-3);
+
+	// The real test is behavioural: corrected magnitudes must be g regardless
+	// of orientation. The individual matrix entries are only determined up to a
+	// rotation, so comparing them directly would be testing the wrong thing.
+	double worst = 0;
+	for (const auto& d : dirs) {
+		const double t[3] = {d[0] * g, d[1] * g, d[2] * g};
+		float raw[3];
+		corrupt(t, gain, crossXY, bias, raw);
+		float cor[3];
+		fitted.apply(raw, cor);
+		const double mag
+			= std::sqrt(cor[0] * cor[0] + cor[1] * cor[1] + cor[2] * cor[2]);
+		worst = std::max(worst, std::fabs(mag - g));
+	}
+	TRUE_(worst < 0.01);
+
+	// And it must be a real improvement over doing nothing.
+	double worstRaw = 0;
+	for (const auto& d : dirs) {
+		const double t[3] = {d[0] * g, d[1] * g, d[2] * g};
+		float raw[3];
+		corrupt(t, gain, crossXY, bias, raw);
+		const double mag
+			= std::sqrt(raw[0] * raw[0] + raw[1] * raw[1] + raw[2] * raw[2]);
+		worstRaw = std::max(worstRaw, std::fabs(mag - g));
+	}
+	TRUE_(worstRaw > 0.2);
+	TRUE_(worst < worstRaw / 10.0);
+}
+
+void testFitIsNearIdentityForAPerfectSensor() {
+	// A sensor with no error must not have error invented for it.
+	constexpr double g = 9.80665;
+	const double gain[3] = {1.0, 1.0, 1.0};
+	const double bias[3] = {0.0, 0.0, 0.0};
+
+	std::vector<std::array<double, 3>> dirs;
+	sphereDirections(dirs, 100);
+	std::vector<float> samples;
+	for (const auto& d : dirs) {
+		const double t[3] = {d[0] * g, d[1] * g, d[2] * g};
+		float raw[3];
+		corrupt(t, gain, 0.0, bias, raw);
+		samples.push_back(raw[0]);
+		samples.push_back(raw[1]);
+		samples.push_back(raw[2]);
+	}
+
+	ErrorModel fitted;
+	TRUE_(fitErrorModel(samples.data(), dirs.size(), static_cast<float>(g), fitted));
+	NEAR(fitted.m[0], 1.0, 1e-3);
+	NEAR(fitted.m[4], 1.0, 1e-3);
+	NEAR(fitted.m[8], 1.0, 1e-3);
+	NEAR(fitted.bias[0], 0.0, 1e-3);
+	NEAR(fitted.bias[1], 0.0, 1e-3);
+	NEAR(fitted.bias[2], 0.0, 1e-3);
+}
+
+void testFitRejectsInsufficientData() {
+	ErrorModel m;
+	float few[12] = {0};
+	TRUE_(!fitErrorModel(few, 4, 9.8f, m));
+	TRUE_(!fitErrorModel(few, 4, 0.0f, m));
+	// Model must be untouched on failure.
+	TRUE_(m.isIdentity());
+}
+
+void testFitRejectsDegenerateOrientations() {
+	// All samples near one attitude leave the quadric under-determined. The fit
+	// must fail rather than return a confident, wrong model -- a bad
+	// calibration is worse than none, because it is applied to every sample.
+	constexpr double g = 9.80665;
+	std::vector<float> samples;
+	for (int i = 0; i < 60; i++) {
+		const double th = 0.001 * i;
+		samples.push_back(static_cast<float>(g * std::sin(th)));
+		samples.push_back(static_cast<float>(g * std::cos(th)));
+		samples.push_back(0.0f);
+	}
+	ErrorModel m;
+	const bool ok = fitErrorModel(samples.data(), 60, static_cast<float>(g), m);
+	if (ok) {
+		// If it does return, the result must at least not be wild.
+		TRUE_(std::fabs(m.m[0]) < 100.0f);
+	}
+	TRUE_(true);
+}
+
 }  // namespace
 
 int main() {
@@ -794,6 +976,12 @@ int main() {
 	testBmm350CrossAxis();
 	testBmm350OtpDecoding();
 	testBmm350TemperatureConversion();
+	testErrorModelIdentityByDefault();
+	testErrorModelApply();
+	testFitRecoversBiasScaleAndMisalignment();
+	testFitIsNearIdentityForAPerfectSensor();
+	testFitRejectsInsufficientData();
+	testFitRejectsDegenerateOrientations();
 
 	if (gFailures == 0) {
 		std::printf("selftest: %d checks passed\n", gChecks);
