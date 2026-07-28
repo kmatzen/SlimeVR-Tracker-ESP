@@ -38,6 +38,16 @@ public:
 		// Server can parse bundle packets: `PACKET_BUNDLE` = 100 (0x64).
 		PROTOCOL_BUNDLE_SUPPORT,
 
+		// Server can parse compact bundles and packed rotation/acceleration
+		// frames. Listed so the ordinals stay aligned with the server's
+		// ServerFeatureFlags enum -- these are bit positions, so a gap here
+		// would silently shift every flag after it.
+		PROTOCOL_BUNDLE_COMPACT_SUPPORT,
+
+		// Server accepts rotation packets carrying a tracker-side sample
+		// timestamp: `PACKET_ROTATION_DATA_TIMESTAMPED` = 29.
+		PROTOCOL_SAMPLE_TIMESTAMPS,
+
 		// Add new flags here
 
 		BITS_TOTAL,

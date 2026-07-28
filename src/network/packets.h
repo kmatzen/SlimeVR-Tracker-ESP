@@ -56,6 +56,7 @@ enum class SendPacketType : uint8_t {
 	FlexData = 26,
 	// PositionData = 27,
 	TimeSync = 28,
+	RotationDataTimestamped = 29,
 	Bundle = 100,
 	Inspection = 105,
 };
@@ -158,6 +159,29 @@ struct RotationDataPacket {
 	BigEndian<float> z;
 	BigEndian<float> w;
 	uint8_t accuracyInfo{};
+};
+
+/**
+ * Rotation with the tracker's own measurement time attached.
+ *
+ * Identical to RotationDataPacket with a trailing timestamp, so the server can
+ * convert the sample into its own timebase instead of assuming it arrived the
+ * instant it was measured.
+ *
+ * The timestamp is the tracker's raw 32-bit `micros()`, which wraps roughly
+ * every 71.6 minutes. It is sent raw and unwrapped by the server, which already
+ * tracks the wrap for clock synchronisation -- doing it in one place avoids two
+ * implementations that have to agree.
+ */
+struct RotationDataTimestampedPacket {
+	uint8_t sensorId{};
+	uint8_t dataType{};
+	BigEndian<float> x;
+	BigEndian<float> y;
+	BigEndian<float> z;
+	BigEndian<float> w;
+	uint8_t accuracyInfo{};
+	BigEndian<uint32_t> timestampMicros;
 };
 
 struct MagnetometerAccuracyPacket {
