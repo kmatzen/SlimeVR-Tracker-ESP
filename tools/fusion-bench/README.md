@@ -497,11 +497,53 @@ the first thing to check. A `Sensor hub reported a NACK` line in the log means
 the tags are right and the auxiliary sensor is not responding — a different
 problem, and a much easier one.
 
-### A note on absolute accuracy
+### Milestone 4 — factory trim (OTP) compensation
 
-The BMM350 needs OTP trim data and a per-axis compensation to give a calibrated
-field magnitude, and that is not implemented — `MagDefinition::scale` is a
-placeholder.
+Implemented. On detection the driver reads all 32 OTP words through the sensor
+hub, decodes the trim, and applies offset, per-axis sensitivity and cross-axis
+compensation to every sample.
+
+Look for this line at startup:
+
+```
+[INFO ] [MagDriver] Read BMM350 factory trim data
+```
+
+If instead you see `Failed to read BMM350 trim data; continuing uncompensated`,
+the magnetometer still works — `bmm350Compensate` falls back to nominal scaling,
+so a bad OTP read costs accuracy rather than the whole sensor. The OTP readout
+costs several sensor-hub transactions per word and the hub is clocked by the
+accelerometer, so all 32 words take a noticeable fraction of a second; that is
+why it happens once at startup and never per-sample.
+
+The arithmetic — OTP word decoding, sign extension of the 8- and 12-bit packed
+fields, and the compensation formula — is in
+`src/sensors/softfusion/drivers/bmm350comp.h`, deliberately hardware-free so it
+can be unit tested. It is covered by 40 checks in `tests/selftest.cpp`,
+including the `offset_y`/`offset_z` fields that straddle two OTP words, which
+are the easiest thing in the decoder to get wrong and the hardest to notice.
+Those tests were confirmed non-vacuous by mutation.
+
+Cross-axis compensation is the part that matters most for a tracker: it rotates
+the measured field vector, and a rotated vector is a wrong heading — an error no
+amount of downstream filtering can undo. Per-axis sensitivity has the same
+character. Both are now corrected.
+
+### Known limitation: temperature drift is not corrected
+
+The TCO and TCS terms need the BMM350's own die temperature, which lives at
+registers `0x3A`–`0x3C`, immediately after the magnetometer data. Reading it
+would extend the sensor-hub burst from 9 to 12 data bytes, which no longer fits
+two slaves and would raise the FIFO word rate.
+
+Until then the compensation is evaluated at the trim's reference temperature,
+where both terms are defined to vanish. This is a well-defined degradation
+rather than a fudge: everything affecting field *direction* is corrected, and
+what is dropped is the second-order drift of offset and sensitivity with
+temperature.
+
+Wiring it up needs a third sensor-hub slave and a lower magnetometer ODR to keep
+FIFO pressure sane — 25 Hz is ample for heading.
 
 For heading purposes this matters less than it sounds: VQF needs a consistent
 field *direction*, and hard- and soft-iron correction is a separate step

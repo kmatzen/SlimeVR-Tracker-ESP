@@ -26,6 +26,7 @@
 #include <functional>
 #include <optional>
 
+#include "drivers/bmm350comp.h"
 #include "logging/Logger.h"
 #include "sensorinterface/RegisterInterface.h"
 
@@ -69,6 +70,12 @@ struct MagDefinition {
 	uint8_t dummyBytes = 0;
 
 	std::function<bool(MagInterface& interface)> setup;
+
+	// Optional per-part trim readout. Only the BMM350 needs one today, so the
+	// signature names it rather than pretending to a generality that does not
+	// exist -- a second part needing trim is the right moment to abstract this,
+	// not before.
+	std::function<bool(MagInterface& interface, Bmm350Calibration& out)> readTrim;
 };
 
 class MagDriver {
@@ -81,9 +88,13 @@ public:
 	[[nodiscard]] float getScale() const;
 	/** Dummy bytes preceding data on a burst read from the detected part. */
 	[[nodiscard]] uint8_t getDummyBytes() const;
+	/// True when the detected part supplied usable OTP trim data.
+	[[nodiscard]] bool hasTrim() const { return trim.valid; }
+	[[nodiscard]] const Bmm350Calibration& getTrim() const { return trim; }
 
 private:
 	std::optional<MagDefinition> detectedMag;
+	Bmm350Calibration trim;
 	MagInterface interface;
 
 	static std::vector<MagDefinition> supportedMags;

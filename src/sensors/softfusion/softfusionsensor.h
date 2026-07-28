@@ -148,11 +148,32 @@ class SoftFusionSensor : public Sensor {
 	 * reading at all.
 	 */
 	void processMagSample(const int32_t xyz[3], const sensor_real_t timeDelta) {
-		const float scale = magDriver.getScale();
-		sensor_real_t magData[]
-			= {static_cast<sensor_real_t>(xyz[0]) * scale,
-			   static_cast<sensor_real_t>(xyz[1]) * scale,
-			   static_cast<sensor_real_t>(xyz[2]) * scale};
+		sensor_real_t magData[3];
+
+		if (magDriver.hasTrim()) {
+			// Factory trim available: apply the part's offset, sensitivity and
+			// cross-axis compensation. The cross-axis terms are the ones that
+			// matter most here -- they rotate the measured field vector, and a
+			// rotated vector is a wrong heading, which is an error no amount of
+			// filtering downstream can undo.
+			//
+			// The die temperature is not currently read, so the reference
+			// temperature is passed: the TCO and TCS terms are both defined
+			// relative to it and therefore vanish. That drops the temperature
+			// drift correction, which is second order, and keeps everything
+			// that affects direction.
+			const auto& trim = magDriver.getTrim();
+			float compensated[3];
+			SoftFusion::bmm350Compensate(xyz, trim.dutT0, trim, compensated);
+			magData[0] = static_cast<sensor_real_t>(compensated[0]);
+			magData[1] = static_cast<sensor_real_t>(compensated[1]);
+			magData[2] = static_cast<sensor_real_t>(compensated[2]);
+		} else {
+			const float scale = magDriver.getScale();
+			magData[0] = static_cast<sensor_real_t>(xyz[0]) * scale;
+			magData[1] = static_cast<sensor_real_t>(xyz[1]) * scale;
+			magData[2] = static_cast<sensor_real_t>(xyz[2]) * scale;
+		}
 
 		m_fusion.updateMag(magData, timeDelta);
 	}

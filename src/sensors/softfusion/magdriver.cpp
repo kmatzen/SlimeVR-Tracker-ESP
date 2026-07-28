@@ -121,6 +121,50 @@ std::vector<MagDefinition> MagDriver::supportedMags{
 
 				return true;
 			},
+
+		.readTrim =
+			[](MagInterface& interface, Bmm350Calibration& out) {
+				// Each word costs several sensor-hub transactions, and the hub
+				// is clocked by the accelerometer, so all 32 take a noticeable
+				// fraction of a second. That is acceptable once at startup and
+				// is why this is not attempted per-sample.
+				uint16_t otp[kBmm350OtpWordCount] = {0};
+
+				for (uint8_t word = 0; word < kBmm350OtpWordCount; word++) {
+					interface.writeByte(
+						0x50,  // OTP_CMD
+						static_cast<uint8_t>(0x20 /* direct read */ | (word & 0x1f))
+					);
+
+					bool done = false;
+					for (uint8_t attempt = 0; attempt < 10; attempt++) {
+						delay(1);
+						const uint8_t status = interface.readByte(0x55);
+						if (status & 0xe0) {  // error bits
+							return false;
+						}
+						if (status & 0x01) {  // command done
+							done = true;
+							break;
+						}
+					}
+					if (!done) {
+						return false;
+					}
+
+					const uint8_t msb = interface.readByte(0x52);
+					const uint8_t lsb = interface.readByte(0x53);
+					otp[word] = static_cast<uint16_t>(
+						(static_cast<uint16_t>(msb) << 8) | lsb
+					);
+				}
+
+				// Power the OTP block down once the trim is captured.
+				interface.writeByte(0x50, 0x80);
+
+				bmm350DecodeOtp(otp, out);
+				return true;
+			},
 	},
 };
 
@@ -151,6 +195,19 @@ bool MagDriver::init(MagInterface&& interface, bool supports9ByteMags) {
 		if (!mag.setup(interface)) {
 			logger.error("Mag %s failed to initialize!", mag.name);
 			return false;
+		}
+
+		if (mag.readTrim) {
+			if (mag.readTrim(interface, trim)) {
+				logger.info("Read %s factory trim data", mag.name);
+			} else {
+				// Not fatal: bmm350Compensate falls back to nominal scaling, so
+				// an unreadable OTP costs accuracy rather than the whole mag.
+				logger.error(
+					"Failed to read %s trim data; continuing uncompensated",
+					mag.name
+				);
+			}
 		}
 
 		detectedMag = mag;

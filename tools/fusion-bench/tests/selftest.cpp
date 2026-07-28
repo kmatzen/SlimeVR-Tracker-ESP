@@ -17,6 +17,7 @@
 
 // The sensor-hub FIFO assembler, compiled straight from the firmware tree. It
 // has no Arduino dependency precisely so it can be tested here.
+#include "../../../src/sensors/softfusion/drivers/bmm350comp.h"
 #include "../../../src/sensors/softfusion/drivers/magfifo.h"
 
 using namespace fb;
@@ -593,6 +594,178 @@ void testSignExtend24Boundaries() {
 	NEAR(MagFifoAssembler::signExtend24(negOne), -1.0, 0.0);
 }
 
+using SlimeVR::Sensors::SoftFusion::Bmm350Calibration;
+using SlimeVR::Sensors::SoftFusion::bmm350Compensate;
+using SlimeVR::Sensors::SoftFusion::bmm350DecodeOtp;
+using SlimeVR::Sensors::SoftFusion::bmm350FixSign;
+using SlimeVR::Sensors::SoftFusion::bmm350RawToCelsius;
+using SlimeVR::Sensors::SoftFusion::kBmm350LsbToUtXY;
+using SlimeVR::Sensors::SoftFusion::kBmm350LsbToUtZ;
+
+void testBmm350FixSign() {
+	// The OTP packs signed values into 8- and 12-bit fields. Getting the
+	// sign extension wrong flips roughly half the trim coefficients, which is
+	// invisible without a reference -- so pin the boundaries.
+	NEAR(bmm350FixSign(0x00, 8), 0.0, 0.0);
+	NEAR(bmm350FixSign(0x7f, 8), 127.0, 0.0);
+	NEAR(bmm350FixSign(0x80, 8), -128.0, 0.0);
+	NEAR(bmm350FixSign(0xff, 8), -1.0, 0.0);
+
+	NEAR(bmm350FixSign(0x000, 12), 0.0, 0.0);
+	NEAR(bmm350FixSign(0x7ff, 12), 2047.0, 0.0);
+	NEAR(bmm350FixSign(0x800, 12), -2048.0, 0.0);
+	NEAR(bmm350FixSign(0xfff, 12), -1.0, 0.0);
+
+	NEAR(bmm350FixSign(0xffff, 16), -1.0, 0.0);
+	NEAR(bmm350FixSign(0x8000, 16), -32768.0, 0.0);
+}
+
+void testBmm350UncalibratedPassthrough() {
+	// With no trim data the result must be nominal scaling, not zero. A failed
+	// OTP read should degrade to "uncompensated", never to "no signal".
+	Bmm350Calibration cal;  // valid == false
+	const int32_t raw[3] = {1000, -2000, 3000};
+	float out[3] = {0, 0, 0};
+	bmm350Compensate(raw, 25.0f, cal, out);
+	NEAR(out[0], 1000 * kBmm350LsbToUtXY, 1e-6);
+	NEAR(out[1], -2000 * kBmm350LsbToUtXY, 1e-6);
+	NEAR(out[2], 3000 * kBmm350LsbToUtZ, 1e-6);
+}
+
+void testBmm350IdentityCalibration() {
+	// A part with all-zero trim must behave exactly like the uncompensated
+	// path. If this diverges, the formula has a stray constant in it.
+	Bmm350Calibration cal;
+	cal.valid = true;
+	cal.dutT0 = 23.0f;
+
+	const int32_t raw[3] = {1000, -2000, 3000};
+	float out[3] = {0, 0, 0};
+	bmm350Compensate(raw, cal.dutT0, cal, out);
+	NEAR(out[0], 1000 * kBmm350LsbToUtXY, 1e-6);
+	NEAR(out[1], -2000 * kBmm350LsbToUtXY, 1e-6);
+	NEAR(out[2], 3000 * kBmm350LsbToUtZ, 1e-6);
+}
+
+void testBmm350OffsetAndSensitivity() {
+	Bmm350Calibration cal;
+	cal.valid = true;
+	cal.dutT0 = 23.0f;
+	cal.sensX = 0.10f;  // 10% high
+	cal.offsetY = 5.0f;  // +5 uT
+
+	const int32_t raw[3] = {1000, 1000, 0};
+	float out[3] = {0, 0, 0};
+	bmm350Compensate(raw, cal.dutT0, cal, out);
+
+	NEAR(out[0], 1000 * kBmm350LsbToUtXY * 1.10f, 1e-5);
+	NEAR(out[1], 1000 * kBmm350LsbToUtXY + 5.0f, 1e-5);
+	NEAR(out[2], 0.0, 1e-6);
+}
+
+void testBmm350TemperatureTermsVanishAtT0() {
+	// TCO and TCS are defined relative to dut_t0, so at that temperature they
+	// must contribute nothing. This is what makes it legitimate to pass dutT0
+	// when the temperature channel is not being read.
+	Bmm350Calibration cal;
+	cal.valid = true;
+	cal.dutT0 = 23.0f;
+	cal.tcoX = 1.5f;
+	cal.tcsX = 0.01f;
+
+	const int32_t raw[3] = {1000, 0, 0};
+	float atT0[3] = {0, 0, 0};
+	float away[3] = {0, 0, 0};
+	bmm350Compensate(raw, cal.dutT0, cal, atT0);
+	bmm350Compensate(raw, cal.dutT0 + 20.0f, cal, away);
+
+	NEAR(atT0[0], 1000 * kBmm350LsbToUtXY, 1e-5);
+	// ...and away from it they must actually do something, or the terms are
+	// silently inert.
+	TRUE_(std::fabs(away[0] - atT0[0]) > 1.0);
+}
+
+void testBmm350CrossAxis() {
+	// Cross-axis coupling is the term that matters most for heading: it rotates
+	// the measured field vector, and a rotated vector is a wrong heading.
+	Bmm350Calibration cal;
+	cal.valid = true;
+	cal.dutT0 = 23.0f;
+	cal.crossXY = 0.05f;
+
+	const int32_t raw[3] = {0, 1000, 0};
+	float out[3] = {0, 0, 0};
+	bmm350Compensate(raw, cal.dutT0, cal, out);
+
+	// A pure Y field must produce a non-zero X correction.
+	const float y = 1000 * kBmm350LsbToUtXY;
+	NEAR(out[0], (0.0f - 0.05f * y) / (1.0f - 0.0f), 1e-5);
+	TRUE_(std::fabs(out[0]) > 0.1);
+}
+
+void testBmm350OtpDecoding() {
+	// Word layout, field positions and divisors, checked against
+	// BMM350_SensorAPI's update_mag_off_sens.
+	uint16_t otp[32] = {0};
+	otp[0] = 0x0123;  // offset_x = 0x123 = 291
+	otp[3] = 0x0a05;  // t_offs = 5/5 = 1 ; t_sens = 10/512
+	otp[4] = 0x8000;  // sens_x = -128/256 = -0.5
+	otp[5] = 0x0040;  // sens_y = 64/256 = 0.25
+	otp[7] = 0x0020;  // tco_x = 32/32 = 1
+	otp[10] = 0x0100;  // tcs_x = 1/16384
+	otp[13] = 0x0200;  // dut_t0 = 512/512 + 23 = 24
+	otp[14] = 0x0008;  // cross_x_y = 8/800 = 0.01
+
+	Bmm350Calibration cal;
+	bmm350DecodeOtp(otp, cal);
+
+	TRUE_(cal.valid);
+	NEAR(cal.offsetX, 291.0, 1e-6);
+	NEAR(cal.tOffs, 1.0, 1e-6);
+	NEAR(cal.tSens, 10.0 / 512.0, 1e-9);
+	NEAR(cal.sensX, -0.5, 1e-9);
+	NEAR(cal.sensY, 0.25, 1e-9);
+	NEAR(cal.tcoX, 1.0, 1e-9);
+	NEAR(cal.tcsX, 1.0 / 16384.0, 1e-12);
+	NEAR(cal.dutT0, 24.0, 1e-6);
+	NEAR(cal.crossXY, 0.01, 1e-9);
+
+	// offset_y and offset_z each straddle two OTP words, which is the easiest
+	// thing in this decoder to get wrong and the hardest to notice.
+	uint16_t off[32] = {0};
+	// offset_y = 0xABC: high nibble 0xA in word0 bits 12-15, low byte 0xBC in
+	// word1 bits 0-7.
+	off[0] = 0xa000;
+	off[1] = 0x00bc;
+	// offset_z = 0x123: nibble 0x1 in word1 bits 8-11, low byte 0x23 in word2.
+	off[1] |= 0x0100;
+	off[2] = 0x0023;
+	Bmm350Calibration ocal;
+	bmm350DecodeOtp(off, ocal);
+	// 0xABC has bit 11 set, so it is negative: 0xABC - 0x1000 = -1348.
+	NEAR(ocal.offsetY, -1348.0, 1e-6);
+	NEAR(ocal.offsetZ, 291.0, 1e-6);  // 0x123
+
+	// Negative coefficients must come out negative.
+	uint16_t neg[32] = {0};
+	neg[4] = 0xff00;  // sens_x = -1/256
+	neg[13] = 0xfe00;  // dut_t0 = -512/512 + 23 = 22
+	Bmm350Calibration ncal;
+	bmm350DecodeOtp(neg, ncal);
+	NEAR(ncal.sensX, -1.0 / 256.0, 1e-9);
+	NEAR(ncal.dutT0, 22.0, 1e-6);
+}
+
+void testBmm350TemperatureConversion() {
+	// The vendor conversion is piecewise around zero, which is unusual enough
+	// to be worth pinning.
+	NEAR(bmm350RawToCelsius(0), 0.0, 1e-9);
+	const float pos = bmm350RawToCelsius(30000);
+	NEAR(pos, 30000 * 0.000981282 - 25.49, 1e-4);
+	const float neg = bmm350RawToCelsius(-30000);
+	NEAR(neg, -30000 * 0.000981282 + 25.49, 1e-4);
+}
+
 }  // namespace
 
 int main() {
@@ -613,6 +786,14 @@ int main() {
 	testMagFifoDroppedSlave1Recovers();
 	testMagFifoRejectsBadConfig();
 	testSignExtend24Boundaries();
+	testBmm350FixSign();
+	testBmm350UncalibratedPassthrough();
+	testBmm350IdentityCalibration();
+	testBmm350OffsetAndSensitivity();
+	testBmm350TemperatureTermsVanishAtT0();
+	testBmm350CrossAxis();
+	testBmm350OtpDecoding();
+	testBmm350TemperatureConversion();
 
 	if (gFailures == 0) {
 		std::printf("selftest: %d checks passed\n", gChecks);
