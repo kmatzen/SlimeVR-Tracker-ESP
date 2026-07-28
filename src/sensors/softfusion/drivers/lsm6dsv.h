@@ -136,11 +136,23 @@ struct LSM6DSV
 	}
 
 	bool bulkRead(DriverCallbacks<int16_t>&& callbacks) {
+		// The sensor hub only batches into the FIFO once startAuxPolling has
+		// configured it, so before then this is a zeroed config and the
+		// sensor-hub tags are ignored.
+		MagFifoConfig mag;
+		mag.enabled = auxPolling();
+		mag.dummyBytes = auxDummyBytes();
+		mag.dataBytes = auxDataBytes();
+		mag.split = auxSplit();
+		mag.firstDataBytes = auxFirstDataBytes();
+		mag.magTs = MagTs;
+
 		return LSM6DSOutputHandler::template bulkRead<Regs>(
 			std::move(callbacks),
 			GyrTs,
 			AccTs,
-			TempTs
+			TempTs,
+			mag
 		);
 	}
 };

@@ -15,6 +15,10 @@
 #include "quatmath.h"
 #include "synth.h"
 
+// The sensor-hub FIFO assembler, compiled straight from the firmware tree. It
+// has no Arduino dependency precisely so it can be tested here.
+#include "../../../src/sensors/softfusion/drivers/magfifo.h"
+
 using namespace fb;
 
 namespace {
@@ -461,6 +465,134 @@ void testPresenceSurvivesRoundTrip() {
 	std::remove(path.c_str());
 }
 
+using SlimeVR::Sensors::SoftFusion::MagFifoAssembler;
+using SlimeVR::Sensors::SoftFusion::MagFifoConfig;
+
+void testMagFifo24BitSplit() {
+	// The BMM350 case: 9 data bytes behind 2 dummy bytes, which cannot fit one
+	// slave (SLAVE0_NUMOP caps at 7), so it is split. Each slave transaction
+	// carries its own dummy-byte prefix.
+	MagFifoConfig cfg;
+	cfg.enabled = true;
+	cfg.dummyBytes = 2;
+	cfg.dataBytes = 9;
+	cfg.split = true;
+	cfg.firstDataBytes = 5;
+
+	NEAR(cfg.slave0Needed(), 7.0, 0.0);  // 2 dummy + 5 data
+	NEAR(cfg.slave1Needed(), 6.0, 0.0);  // 2 dummy + 4 data
+
+	// X = 0x123456, Y = 0x000001, Z = -2 (0xFFFFFE), little-endian per axis.
+	const uint8_t data[9] = {
+		0x56,
+		0x34,
+		0x12,  // X
+		0x01,
+		0x00,
+		0x00,  // Y
+		0xFE,
+		0xFF,
+		0xFF,  // Z
+	};
+
+	// Slave 0: 2 dummy + data[0..4], padded out to two 6-byte FIFO words.
+	uint8_t s0w0[6] = {0xAA, 0xBB, data[0], data[1], data[2], data[3]};
+	uint8_t s0w1[6] = {data[4], 0x00, 0x00, 0x00, 0x00, 0x00};
+	// Slave 1: 2 dummy + data[5..8], one word.
+	uint8_t s1w0[6] = {0xCC, 0xDD, data[5], data[6], data[7], data[8]};
+
+	MagFifoAssembler a;
+	int32_t xyz[3] = {0, 0, 0};
+
+	TRUE_(!a.feedSlave0(s0w0, cfg, xyz));  // incomplete
+	TRUE_(!a.feedSlave0(s0w1, cfg, xyz));  // slave 0 done, slave 1 outstanding
+	TRUE_(a.feedSlave1(s1w0, cfg, xyz));  // now complete
+
+	NEAR(xyz[0], 0x123456, 0.0);
+	NEAR(xyz[1], 1.0, 0.0);
+	NEAR(xyz[2], -2.0, 0.0);  // sign extension across 24 bits
+}
+
+void testMagFifo16BitSingleSlave() {
+	// A 6-byte magnetometer with no dummy bytes fits one slave and one word.
+	MagFifoConfig cfg;
+	cfg.enabled = true;
+	cfg.dummyBytes = 0;
+	cfg.dataBytes = 6;
+	cfg.split = false;
+
+	NEAR(cfg.slave0Needed(), 6.0, 0.0);
+	NEAR(cfg.slave1Needed(), 0.0, 0.0);
+
+	// X = 1, Y = -1, Z = 258
+	uint8_t word[6] = {0x01, 0x00, 0xFF, 0xFF, 0x02, 0x01};
+
+	MagFifoAssembler a;
+	int32_t xyz[3] = {0, 0, 0};
+	TRUE_(a.feedSlave0(word, cfg, xyz));
+	NEAR(xyz[0], 1.0, 0.0);
+	NEAR(xyz[1], -1.0, 0.0);
+	NEAR(xyz[2], 258.0, 0.0);
+}
+
+void testMagFifoDroppedSlave1Recovers() {
+	// If slave 1's word is lost, the next slave-0 word must start a fresh
+	// sample rather than being concatenated onto the stale one -- otherwise the
+	// assembler would emit a blend of two samples, which looks like plausible
+	// data and is not.
+	MagFifoConfig cfg;
+	cfg.enabled = true;
+	cfg.dummyBytes = 2;
+	cfg.dataBytes = 9;
+	cfg.split = true;
+	cfg.firstDataBytes = 5;
+
+	uint8_t s0a[6] = {0xAA, 0xBB, 0x11, 0x11, 0x11, 0x22};
+	uint8_t s0b[6] = {0x22, 0, 0, 0, 0, 0};
+	uint8_t s0c[6] = {0xAA, 0xBB, 0x56, 0x34, 0x12, 0x01};
+	uint8_t s0d[6] = {0x00, 0, 0, 0, 0, 0};
+	uint8_t s1[6] = {0xCC, 0xDD, 0x00, 0xFE, 0xFF, 0xFF};
+
+	MagFifoAssembler a;
+	int32_t xyz[3] = {0, 0, 0};
+
+	// First sample: slave 1 never arrives.
+	TRUE_(!a.feedSlave0(s0a, cfg, xyz));
+	TRUE_(!a.feedSlave0(s0b, cfg, xyz));
+
+	// Second sample begins; the stale slave-0 bytes must be discarded.
+	TRUE_(!a.feedSlave0(s0c, cfg, xyz));
+	TRUE_(!a.feedSlave0(s0d, cfg, xyz));
+	TRUE_(a.feedSlave1(s1, cfg, xyz));
+
+	// Must be the *second* sample, uncontaminated by the first.
+	NEAR(xyz[0], 0x123456, 0.0);
+	NEAR(xyz[1], 1.0, 0.0);
+	NEAR(xyz[2], -2.0, 0.0);
+}
+
+void testMagFifoRejectsBadConfig() {
+	// A zeroed config must never emit. This is what protects the path before
+	// startAuxPolling has run.
+	MagFifoConfig cfg;
+	uint8_t word[6] = {1, 2, 3, 4, 5, 6};
+	MagFifoAssembler a;
+	int32_t xyz[3] = {0, 0, 0};
+	TRUE_(!a.feedSlave0(word, cfg, xyz));
+	TRUE_(!a.feedSlave1(word, cfg, xyz));
+}
+
+void testSignExtend24Boundaries() {
+	const uint8_t zero[3] = {0x00, 0x00, 0x00};
+	const uint8_t maxPos[3] = {0xFF, 0xFF, 0x7F};  // 8388607
+	const uint8_t minNeg[3] = {0x00, 0x00, 0x80};  // -8388608
+	const uint8_t negOne[3] = {0xFF, 0xFF, 0xFF};  // -1
+	NEAR(MagFifoAssembler::signExtend24(zero), 0.0, 0.0);
+	NEAR(MagFifoAssembler::signExtend24(maxPos), 8388607.0, 0.0);
+	NEAR(MagFifoAssembler::signExtend24(minNeg), -8388608.0, 0.0);
+	NEAR(MagFifoAssembler::signExtend24(negOne), -1.0, 0.0);
+}
+
 }  // namespace
 
 int main() {
@@ -476,6 +608,11 @@ int main() {
 	testRawCaptureFormat();
 	testInterleavedMatchesSynchronous();
 	testPresenceSurvivesRoundTrip();
+	testMagFifo24BitSplit();
+	testMagFifo16BitSingleSlave();
+	testMagFifoDroppedSlave1Recovers();
+	testMagFifoRejectsBadConfig();
+	testSignExtend24Boundaries();
 
 	if (gFailures == 0) {
 		std::printf("selftest: %d checks passed\n", gChecks);

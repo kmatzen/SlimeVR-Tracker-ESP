@@ -471,17 +471,31 @@ are the next suspect. `writeAux` uses the same machinery as `readAux`, so if
 milestone 1 passed the mechanism is sound — but verify by reading back
 `PMU_CMD_STATUS_0` (`0x07`) after init and confirming normal mode is latched.
 
-### Milestone 3 — data streaming (not yet implemented)
+### Milestone 3 — data streaming
 
-`startAuxPolling` configures the hub to batch magnetometer data into the IMU
-FIFO, but **the FIFO decode side is not wired up**: `LSM6DSOutputHandler::
-bulkRead` in `lsm6ds-common.h` handles only the gyroscope, accelerometer and
-temperature tags, so sensor-hub words are batched and then dropped.
+The FIFO decode is now implemented. `bulkRead` handles the sensor-hub tags and
+reassembles the split slave-0/slave-1 reads, skipping each transaction's dummy
+bytes, then hands a sample to `processMagSample`.
 
-Finishing this needs the FIFO tag value for sensor-hub slave data, which should
-be confirmed against the datasheet rather than assumed, plus reassembly of the
-split slave-0/slave-1 reads described in `lsm6ds-shub.h`, minus the BMM350's two
-dummy bytes per transaction.
+The byte-level assembly lives in `src/sensors/softfusion/drivers/magfifo.h`,
+deliberately free of any hardware dependency so it can be unit tested — see
+`testMagFifo24BitSplit` and friends in `tests/selftest.cpp`. That logic *is*
+verified: the BMM350's 24-bit split layout, sign extension at the 24-bit
+boundaries, and recovery when a slave-1 word is dropped all have tests, and the
+tests were checked against a deliberate mutation to confirm they are not
+vacuous.
+
+What is **not** verified is the part that touches the device: the FIFO tag
+values. They come from ST's `lsm6dsox_reg.h` enum — slave 0 is `0x0E`, slave 1
+`0x0F`, and a slave NACK is `0x19`. Tags `0x01`–`0x03` in that same enum match
+what this driver already relies on for gyro, accel and temperature on LSM6DSV,
+which is good evidence the numbering carries over, but it is evidence rather
+than confirmation.
+
+If milestones 1 and 2 pass and no magnetometer data arrives, the tag values are
+the first thing to check. A `Sensor hub reported a NACK` line in the log means
+the tags are right and the auxiliary sensor is not responding — a different
+problem, and a much easier one.
 
 ### A note on absolute accuracy
 

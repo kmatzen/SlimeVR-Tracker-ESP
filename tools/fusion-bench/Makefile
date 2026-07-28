@@ -26,6 +26,12 @@ BENCH_SRC := src/main.cpp src/dataset.cpp src/metrics.cpp src/synth.cpp \
 TEST_SRC  := tests/selftest.cpp src/dataset.cpp src/metrics.cpp src/synth.cpp \
              $(VQF_DIR)/vqf.cpp
 
+# Headers are prerequisites too. Without these, editing a header leaves a stale
+# binary in place and `make test` reports a pass for code it never compiled --
+# which it did, until a deliberate mutation failed to fail.
+HEADERS   := $(wildcard src/*.h) $(VQF_DIR)/vqf.h \
+             $(wildcard $(ROOT)/src/sensors/softfusion/drivers/magfifo.h)
+
 SOURCES := src/main.cpp src/dataset.cpp src/metrics.cpp src/synth.cpp \
            src/dataset.h src/metrics.h src/quatmath.h src/synth.h \
            tests/selftest.cpp
@@ -39,10 +45,10 @@ CLANG_FORMAT ?= clang-format
 
 all: $(BUILD)/fusion-bench $(BUILD)/selftest
 
-$(BUILD)/fusion-bench: $(BENCH_SRC) | $(BUILD)
+$(BUILD)/fusion-bench: $(BENCH_SRC) $(HEADERS) | $(BUILD)
 	$(CXX) $(CXXFLAGS) -o $@ $(BENCH_SRC)
 
-$(BUILD)/selftest: $(TEST_SRC) | $(BUILD)
+$(BUILD)/selftest: $(TEST_SRC) $(HEADERS) | $(BUILD)
 	$(CXX) $(CXXFLAGS) -o $@ $(TEST_SRC)
 
 $(BUILD):

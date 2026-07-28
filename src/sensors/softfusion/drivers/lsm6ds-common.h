@@ -26,9 +26,12 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstring>
+#include <functional>
 
 #include "../../../sensorinterface/RegisterInterface.h"
 #include "callbacks.h"
+#include "magfifo.h"
 
 namespace SlimeVR::Sensors::SoftFusion::Drivers {
 
@@ -54,12 +57,33 @@ struct LSM6DSOutputHandler {
 
 	static constexpr size_t FullFifoEntrySize = sizeof(FifoEntryAligned) + 1;
 
+	/**
+	 * FIFO tag values, from the LSM6DS family's tagged-FIFO encoding.
+	 *
+	 * Tags 1-3 are already relied on by the gyro/accel/temperature cases below
+	 * and are known-good on LSM6DSV, which is good evidence the rest of the
+	 * family numbering carries over. The sensor-hub values are taken from ST's
+	 * lsm6dsox_reg.h enum -- they have NOT been observed on an LSM6DSV.
+	 */
+	enum FifoTag : uint8_t {
+		TagGyroNC = 0x01,
+		TagAccelNC = 0x02,
+		TagTemperature = 0x03,
+		TagShubSlave0 = 0x0e,
+		TagShubSlave1 = 0x0f,
+		TagShubNack = 0x19,
+	};
+
+	MagFifoAssembler m_magAssembler;
+	bool m_shubNackLogged = false;
+
 	template <typename Regs>
 	bool bulkRead(
 		DriverCallbacks<int16_t>&& callbacks,
 		float GyrTs,
 		float AccTs,
-		float TempTs
+		float TempTs,
+		const MagFifoConfig& mag
 	) {
 		constexpr auto FIFO_SAMPLES_MASK = 0x3ff;
 		constexpr auto FIFO_OVERRUN_LATCHED_MASK = 0x800;
@@ -92,18 +116,66 @@ struct LSM6DSOutputHandler {
 			);  // skip fifo header
 
 			switch (tag) {
-				case 0x01:  // Gyro NC
+				case TagGyroNC:
 					callbacks.processGyroSample(entry.xyz, GyrTs);
 					break;
-				case 0x02:  // Accel NC
+				case TagAccelNC:
 					callbacks.processAccelSample(entry.xyz, AccTs);
 					break;
-				case 0x03:  // Temperature
+				case TagTemperature:
 					callbacks.processTempSample(entry.xyz[0], TempTs);
+					break;
+				case TagShubSlave0:
+					if (mag.enabled) {
+						int32_t magXyz[3];
+						if (m_magAssembler.feedSlave0(entry.raw, mag, magXyz)
+							&& callbacks.processMagSample) {
+							callbacks.processMagSample(magXyz, mag.magTs);
+						}
+					}
+					break;
+				case TagShubSlave1:
+					if (mag.enabled) {
+						int32_t magXyz[3];
+						if (m_magAssembler.feedSlave1(entry.raw, mag, magXyz)
+							&& callbacks.processMagSample) {
+							callbacks.processMagSample(magXyz, mag.magTs);
+						}
+					}
+					break;
+				case TagShubNack:
+					// The auxiliary sensor did not acknowledge. Logged once so a
+					// miswired or absent mag is obvious instead of just
+					// producing no data.
+					if (!m_shubNackLogged) {
+						m_shubNackLogged = true;
+						m_Logger.error(
+							"Sensor hub reported a NACK from the auxiliary "
+							"sensor; magnetometer data will not arrive"
+						);
+					}
+					m_magAssembler.reset();
 					break;
 			}
 		}
 		return fifo_bytes > bytes_to_read;
+	}
+
+	/** For drivers with no auxiliary sensor, where the hub tags never appear. */
+	template <typename Regs>
+	bool bulkRead(
+		DriverCallbacks<int16_t>&& callbacks,
+		float GyrTs,
+		float AccTs,
+		float TempTs
+	) {
+		return bulkRead<Regs>(
+			std::move(callbacks),
+			GyrTs,
+			AccTs,
+			TempTs,
+			MagFifoConfig{}
+		);
 	}
 };
 
