@@ -427,3 +427,71 @@ pip install clang-format==17.0.6
 make format        # apply
 make format-check  # verify, as CI does
 ```
+
+## Bring-up: BMM350 over the LSM6DSV sensor hub
+
+**Status: compiles, never run against hardware.** The register values come from
+the LSM6DSV datasheet, ST's `lsm6dsv_reg.h`, and Bosch's `bmm350_defs.h`, but
+none of the sequences have been executed on a real part. Work through these
+milestones in order — each one isolates a different failure, and stopping at the
+first that fails tells you exactly where the problem is.
+
+Build with `serialDebug` set to `true` in `src/debug.h` so the driver's log
+output is visible.
+
+### Milestone 1 — the hub can read the magnetometer's chip ID
+
+This is the decisive test, and it validates most of the risk in one shot: bank
+switching, the slave address, the read sequence, `STATUS_MASTER` polling, and
+the aux bus wiring.
+
+Watch the serial log during startup for:
+
+```
+[INFO ] [MagDriver] Trying mag BMM350!
+[INFO ] [MagDriver] Found mag BMM350! Initializing
+```
+
+- **"Found mag BMM350"** — the sensor hub read path works. Move to milestone 2.
+- **"Trying" but never "Found"** — `readAux` returned something other than
+  `0x33`. Most likely causes, in order: the board straps the BMM350's address
+  pin high, so it is at `0x15` not `0x14` (change `deviceId` in the
+  `MagDefinition`); the aux bus needs the internal pull-ups that
+  `startAuxPolling` enables but `readAux` does not; `STATUS_MASTER_MAINPAGE`
+  (`0x39`) is wrong for this part, so `waitForEndOp` returns before the
+  transaction completes.
+- **"Aux read ... timed out"** — the hub is not completing transactions at all.
+  The hub is clocked by the accelerometer, so confirm the IMU is streaming
+  normally first.
+
+### Milestone 2 — the magnetometer is configured
+
+If detection works but the part never produces sensible data, the setup writes
+are the next suspect. `writeAux` uses the same machinery as `readAux`, so if
+milestone 1 passed the mechanism is sound — but verify by reading back
+`PMU_CMD_STATUS_0` (`0x07`) after init and confirming normal mode is latched.
+
+### Milestone 3 — data streaming (not yet implemented)
+
+`startAuxPolling` configures the hub to batch magnetometer data into the IMU
+FIFO, but **the FIFO decode side is not wired up**: `LSM6DSOutputHandler::
+bulkRead` in `lsm6ds-common.h` handles only the gyroscope, accelerometer and
+temperature tags, so sensor-hub words are batched and then dropped.
+
+Finishing this needs the FIFO tag value for sensor-hub slave data, which should
+be confirmed against the datasheet rather than assumed, plus reassembly of the
+split slave-0/slave-1 reads described in `lsm6ds-shub.h`, minus the BMM350's two
+dummy bytes per transaction.
+
+### A note on absolute accuracy
+
+The BMM350 needs OTP trim data and a per-axis compensation to give a calibrated
+field magnitude, and that is not implemented — `MagDefinition::scale` is a
+placeholder.
+
+For heading purposes this matters less than it sounds: VQF needs a consistent
+field *direction*, and hard- and soft-iron correction is a separate step
+regardless. Uncompensated output should still yield usable heading. It will
+degrade VQF's magnetic-disturbance rejection, though, since that compares field
+norm against a learned reference and cross-axis error makes the norm vary with
+orientation. Worth revisiting once streaming works.

@@ -40,7 +40,7 @@ struct MagInterface {
 	std::function<uint8_t(uint8_t)> readByte;
 	std::function<void(uint8_t, uint8_t)> writeByte;
 	std::function<void(uint8_t)> setDeviceId;
-	std::function<void(uint8_t, MagDataWidth)> startPolling;
+	std::function<void(uint8_t, MagDataWidth, uint8_t)> startPolling;
 	std::function<void()> stopPolling;
 };
 
@@ -55,6 +55,19 @@ struct MagDefinition {
 	MagDataWidth dataWidth;
 	uint8_t dataReg;
 
+	// Raw count to microtesla. VQF only needs a consistent field direction, so
+	// this does not have to be accurate in absolute terms -- but keeping the
+	// magnitude in a sane range helps VQF's magnetic-disturbance rejection,
+	// which compares field norm against a learned reference.
+	float scale = 1.0f;
+
+	// Some parts emit dummy bytes before the real data on an I2C burst read.
+	// The Bosch BMM350 sends two. A sensor hub performing a fixed-length read
+	// has no way to discover this on its own, so it must be declared: getting
+	// it wrong yields plausible-looking but meaningless numbers rather than an
+	// obvious failure.
+	uint8_t dummyBytes = 0;
+
 	std::function<bool(MagInterface& interface)> setup;
 };
 
@@ -64,6 +77,10 @@ public:
 	void startPolling() const;
 	void stopPolling() const;
 	[[nodiscard]] const char* getAttachedMagName() const;
+	/** Raw count to microtesla for the detected part, or 1.0 if none. */
+	[[nodiscard]] float getScale() const;
+	/** Dummy bytes preceding data on a burst read from the detected part. */
+	[[nodiscard]] uint8_t getDummyBytes() const;
 
 private:
 	std::optional<MagDefinition> detectedMag;

@@ -138,6 +138,25 @@ class SoftFusionSensor : public Sensor {
 		calibrator.provideGyroSample(xyz);
 	}
 
+	/**
+	 * Feeds a magnetometer sample to the fusion filter.
+	 *
+	 * VQF only needs a consistent field *direction*, so the raw counts are
+	 * scaled by a nominal per-part factor and otherwise passed through. Hard-
+	 * and soft-iron correction is a separate concern and is not applied here;
+	 * VQF's own magnetic-disturbance rejection decides whether to trust the
+	 * reading at all.
+	 */
+	void processMagSample(const int32_t xyz[3], const sensor_real_t timeDelta) {
+		const float scale = magDriver.getScale();
+		sensor_real_t magData[]
+			= {static_cast<sensor_real_t>(xyz[0]) * scale,
+			   static_cast<sensor_real_t>(xyz[1]) * scale,
+			   static_cast<sensor_real_t>(xyz[2]) * scale};
+
+		m_fusion.updateMag(magData, timeDelta);
+	}
+
 	void
 	processTempSample(const int16_t rawTemperature, const sensor_real_t timeDelta) {
 		if constexpr (!Consts::DirectTempReadOnly) {
@@ -259,6 +278,9 @@ public:
 				[&](int16_t sample, float TempTs) {
 					processTempSample(sample, TempTs);
 				},
+				[&](const int32_t sample[3], float MagTs) {
+					processMagSample(sample, MagTs);
+				},
 			});
 			if (overwhelmed) {
 				calibrator.signalOverwhelmed();
@@ -353,12 +375,15 @@ public:
 				SoftFusion::MagInterface{
 					.readByte
 					= [&](uint8_t address) { return m_sensor.readAux(address); },
-					.writeByte = [&](uint8_t address, uint8_t value) {},
+					.writeByte = [&](uint8_t address, uint8_t value
+								 ) { m_sensor.writeAux(address, value); },
 					.setDeviceId
 					= [&](uint8_t deviceId) { m_sensor.setAuxId(deviceId); },
 					.startPolling
-					= [&](uint8_t dataReg, SoftFusion::MagDataWidth dataWidth
-					  ) { m_sensor.startAuxPolling(dataReg, dataWidth); },
+					= [&](uint8_t dataReg,
+						  SoftFusion::MagDataWidth dataWidth,
+						  uint8_t dummyBytes
+					  ) { m_sensor.startAuxPolling(dataReg, dataWidth, dummyBytes); },
 					.stopPolling = [&]() { m_sensor.stopAuxPolling(); },
 				},
 				Consts::Supports9ByteMag

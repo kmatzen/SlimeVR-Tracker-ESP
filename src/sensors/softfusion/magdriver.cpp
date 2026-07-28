@@ -37,6 +37,8 @@ std::vector<MagDefinition> MagDriver::supportedMags{
 		.dataWidth = MagDataWidth::SixByte,
 		.dataReg = 0x01,
 
+		.scale = 1.0f / 100.0f,  // 8 gauss full scale over 15 bits, to uT
+
 		.setup =
 			[](MagInterface& interface) {
 				interface.writeByte(0x0b, 0x80);
@@ -61,6 +63,8 @@ std::vector<MagDefinition> MagDriver::supportedMags{
 		.dataWidth = MagDataWidth::SixByte,
 		.dataReg = 0x11,
 
+		.scale = 1.0f / 13.2f,  // ~13.2 LSB/uT
+
 		.setup =
 			[](MagInterface& interface) {
 				interface.writeByte(0x32, 0x01);  // Soft reset
@@ -71,7 +75,60 @@ std::vector<MagDefinition> MagDriver::supportedMags{
 				return true;
 			},
 	},
+	MagDefinition{
+		// Bosch BMM350. Present on the CheeseCake "Blueberry" LSM6DSV board.
+		//
+		// NOT YET VALIDATED ON HARDWARE. Register addresses and values are from
+		// the Bosch BMM350 datasheet (BST-BMM350-DS001) and the vendor
+		// BMM350_SensorAPI; the sequence below has been compiled but never run
+		// against a real part. See the bring-up procedure in
+		// tools/fusion-bench/README.md before trusting any of it.
+		.name = "BMM350",
+
+		// 0x14 with the address pin low, 0x15 with it high. Only the low
+		// variant is probed; a board strapping it high will not be detected.
+		.deviceId = 0x14,
+
+		.whoAmIReg = 0x00,
+		.expectedWhoAmI = 0x33,
+
+		// Three bytes per axis (XLSB, LSB, MSB), nine in total, starting at
+		// MAG_X_XLSB.
+		.dataWidth = MagDataWidth::NineByte,
+		.dataReg = 0x31,
+
+		// 0.1 uT/LSB is a placeholder. The BMM350 needs OTP trim data and a
+		// per-axis compensation to give a calibrated magnitude, which is not
+		// implemented -- see the note below.
+		.scale = 0.1f,
+
+		// The BMM350 emits two dummy bytes before real data on a burst read.
+		.dummyBytes = 2,
+
+		.setup =
+			[](MagInterface& interface) {
+				interface.writeByte(0x7e, 0xb6);  // CMD: soft reset
+				delay(25);  // datasheet: 24 ms
+
+				// ODR 100 Hz with 4x averaging. Comfortably above the rate the
+				// sensor hub will poll at, so the hub never reads a stale
+				// sample twice.
+				interface.writeByte(0x04, (0x02 << 4) | 0x04);  // PMU_CMD_AGGR_SET
+				delay(2);
+
+				interface.writeByte(0x06, 0x01);  // PMU_CMD: normal mode
+				delay(40);  // datasheet: 38 ms suspend->normal
+
+				return true;
+			},
+	},
 };
+
+float MagDriver::getScale() const { return detectedMag ? detectedMag->scale : 1.0f; }
+
+uint8_t MagDriver::getDummyBytes() const {
+	return detectedMag ? detectedMag->dummyBytes : 0;
+}
 
 bool MagDriver::init(MagInterface&& interface, bool supports9ByteMags) {
 	for (auto& mag : supportedMags) {
@@ -110,7 +167,11 @@ void MagDriver::startPolling() const {
 		return;
 	}
 
-	interface.startPolling(detectedMag->dataReg, detectedMag->dataWidth);
+	interface.startPolling(
+		detectedMag->dataReg,
+		detectedMag->dataWidth,
+		detectedMag->dummyBytes
+	);
 }
 
 void MagDriver::stopPolling() const {
