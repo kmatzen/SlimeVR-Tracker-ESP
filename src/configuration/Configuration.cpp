@@ -25,6 +25,7 @@
 
 #include <LittleFS.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 
@@ -227,32 +228,80 @@ void Configuration::eraseSensors() {
 	save();
 }
 
+namespace {
+
+/// Smallest layout this firmware will accept: everything up to and including
+/// the accelerometer bias, which is where the older format ended.
+constexpr size_t MinimumSensorConfigSize
+	= offsetof(SensorConfig, data)
+	+ offsetof(RuntimeCalibrationSensorConfig, errorModelValid);
+
+void setIdentityErrorModel(RuntimeCalibrationSensorConfig& c) {
+	constexpr float identity[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+	for (int i = 0; i < 9; i++) {
+		c.A_M[i] = identity[i];
+		c.G_M[i] = identity[i];
+	}
+}
+
+}  // namespace
+
 void Configuration::loadSensors() {
 	SlimeVR::Utils::forEachFile(DIR_CALIBRATIONS, [&](SlimeVR::Utils::File f) {
 		uint8_t sensorId = strtoul(f.name(), nullptr, 10);
 
-		if (f.size() != sizeof(SensorConfig)) {
+		// A shorter file is a calibration written by an older firmware, not a
+		// corrupt one. Rejecting it on an exact size match would silently
+		// discard every user's calibration on upgrade -- the tracker would
+		// recover by recalibrating, but it would lose accumulated gyro bias
+		// and temperature data in the process, which is precisely what this
+		// file exists to preserve.
+		//
+		// A *longer* file is still refused: that means firmware newer than
+		// this one wrote it, and its layout is unknown.
+		const size_t fileSize = f.size();
+		if (fileSize > sizeof(SensorConfig)) {
 			m_Logger.warn(
-				"Skipping incompatible sensor calibration file index %d (size=%u "
-				"expected=%u)",
+				"Skipping sensor calibration file index %d written by newer "
+				"firmware (size=%u expected<=%u)",
 				sensorId,
-				static_cast<unsigned>(f.size()),
+				static_cast<unsigned>(fileSize),
 				static_cast<unsigned>(sizeof(SensorConfig))
 			);
 			return;
 		}
+		if (fileSize < MinimumSensorConfigSize) {
+			m_Logger.warn(
+				"Skipping truncated sensor calibration file index %d (size=%u)",
+				sensorId,
+				static_cast<unsigned>(fileSize)
+			);
+			return;
+		}
 
+		// Zero-initialised, so anything the older layout did not contain reads
+		// as zero and is normalised below.
 		SensorConfig sensorConfig{};
-		auto bytesRead = f.read((uint8_t*)&sensorConfig, sizeof(SensorConfig));
-		if (bytesRead != sizeof(SensorConfig)) {
+		auto bytesRead = f.read((uint8_t*)&sensorConfig, fileSize);
+		if (bytesRead != fileSize) {
 			m_Logger.warn(
 				"Skipping unreadable sensor calibration file index %d (read=%u "
 				"expected=%u)",
 				sensorId,
 				static_cast<unsigned>(bytesRead),
-				static_cast<unsigned>(sizeof(SensorConfig))
+				static_cast<unsigned>(fileSize)
 			);
 			return;
+		}
+
+		if (fileSize < sizeof(SensorConfig)) {
+			m_Logger.info(
+				"Upgrading sensor calibration index %d from an older layout "
+				"(size=%u -> %u)",
+				sensorId,
+				static_cast<unsigned>(fileSize),
+				static_cast<unsigned>(sizeof(SensorConfig))
+			);
 		}
 
 		if (sensorConfig.type > SensorConfigType::RUNTIME_CALIBRATION) {
@@ -262,6 +311,15 @@ void Configuration::loadSensors() {
 				static_cast<int>(sensorConfig.type)
 			);
 			return;
+		}
+
+		// A zeroed error model must be read as identity, never applied as a
+		// matrix: multiplying every sample by a zero matrix would silence the
+		// sensor entirely. This is the one field where "unset" and "zero" mean
+		// different things.
+		if (sensorConfig.type == SensorConfigType::RUNTIME_CALIBRATION
+			&& !sensorConfig.data.runtimeCalibration.errorModelValid) {
+			setIdentityErrorModel(sensorConfig.data.runtimeCalibration);
 		}
 
 		m_Logger.debug(
