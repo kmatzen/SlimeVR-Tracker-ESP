@@ -457,9 +457,14 @@ SDX/SCX onto the host I2C bus independently finds nothing. The board designer's
 caution sheet says the magnetometer *"is an experimental and might not work
 functionally"*, and the board ships in `MAG` and `[NO_MAG]` BOM variants.
 
-Worth measuring before concluding the part is faulty: **1.8 V across C15**, the
-output of U8 (AP7343D-18) that supplies the BMM350's VDD. An unpowered part
-NACKs exactly like an absent one.
+**Resolved: the board tested had no magnetometer fitted.** The `[NO_MAG]` BOM
+variant leaves U6 unpopulated, and an empty footprint NACKs exactly like a
+faulty or unpowered part. The driver's behaviour here is correct -- it detects
+no magnetometer, logs why, and continues with the IMU.
+
+If you are debugging a board that *should* have one, measure **1.8 V across
+C15** (U8's output, feeding the BMM350's VDD) before suspecting the part: an
+unpowered device is indistinguishable from an absent one at the bus level.
 
 #### Two datasheet bugs this found
 
