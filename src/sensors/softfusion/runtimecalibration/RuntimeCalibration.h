@@ -159,23 +159,66 @@ public:
 	}
 
 	void scaleAccelSample(sensor_real_t accelSample[3]) final {
-		accelSample[0] = accelSample[0] * Consts::AScale - activeCalibration.A_off[0];
-		accelSample[1] = accelSample[1] * Consts::AScale - activeCalibration.A_off[1];
-		accelSample[2] = accelSample[2] * Consts::AScale - activeCalibration.A_off[2];
+		const sensor_real_t d[3] = {
+			accelSample[0] * Consts::AScale - activeCalibration.A_off[0],
+			accelSample[1] * Consts::AScale - activeCalibration.A_off[1],
+			accelSample[2] * Consts::AScale - activeCalibration.A_off[2],
+		};
+		applyErrorMatrix(activeCalibration.A_M, d, accelSample);
 	}
 
 	float getAccelTimestep() final { return activeCalibration.A_Ts; }
 
 	void scaleGyroSample(sensor_real_t gyroSample[3]) final {
-		gyroSample[0] = static_cast<sensor_real_t>(
-			Consts::GScale * (gyroSample[0] - activeCalibration.G_off1[0])
-		);
-		gyroSample[1] = static_cast<sensor_real_t>(
-			Consts::GScale * (gyroSample[1] - activeCalibration.G_off1[1])
-		);
-		gyroSample[2] = static_cast<sensor_real_t>(
-			Consts::GScale * (gyroSample[2] - activeCalibration.G_off1[2])
-		);
+		const sensor_real_t d[3] = {
+			static_cast<sensor_real_t>(
+				Consts::GScale * (gyroSample[0] - activeCalibration.G_off1[0])
+			),
+			static_cast<sensor_real_t>(
+				Consts::GScale * (gyroSample[1] - activeCalibration.G_off1[1])
+			),
+			static_cast<sensor_real_t>(
+				Consts::GScale * (gyroSample[2] - activeCalibration.G_off1[2])
+			),
+		};
+		applyErrorMatrix(activeCalibration.G_M, d, gyroSample);
+	}
+
+	/**
+	 * Applies the scale and misalignment matrix to an already bias-corrected
+	 * and scaled sample.
+	 *
+	 * Identity is the overwhelmingly common case -- no device has a fitted
+	 * model yet -- so it is short-circuited rather than paying nine multiplies
+	 * and six adds per sample per sensor at up to 240 Hz.
+	 */
+	static void applyErrorMatrix(
+		const float m[9],
+		const sensor_real_t in[3],
+		sensor_real_t out[3]
+	) {
+		// Treated as identity in two cases: an actual identity matrix, and an
+		// all-zero diagonal.
+		//
+		// The second is the important one. A default-constructed config zeroes
+		// this array, and a zero matrix would multiply every sample to zero --
+		// silencing the sensor completely rather than degrading it. No
+		// legitimate fitted model has a zero on the diagonal, since that would
+		// describe an axis with no sensitivity at all, so this cannot mask a
+		// real calibration.
+		const bool unset = m[0] == 0.0f && m[4] == 0.0f && m[8] == 0.0f;
+		const bool identity = m[0] == 1.0f && m[4] == 1.0f && m[8] == 1.0f
+						   && m[1] == 0.0f && m[2] == 0.0f && m[3] == 0.0f
+						   && m[5] == 0.0f && m[6] == 0.0f && m[7] == 0.0f;
+		if (unset || identity) {
+			out[0] = in[0];
+			out[1] = in[1];
+			out[2] = in[2];
+			return;
+		}
+		out[0] = m[0] * in[0] + m[1] * in[1] + m[2] * in[2];
+		out[1] = m[3] * in[0] + m[4] * in[1] + m[5] * in[2];
+		out[2] = m[6] * in[0] + m[7] * in[1] + m[8] * in[2];
 	}
 
 	float getGyroTimestep() final { return activeCalibration.G_Ts; }

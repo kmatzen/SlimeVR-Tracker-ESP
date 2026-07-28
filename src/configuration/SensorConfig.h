@@ -98,6 +98,20 @@ struct RuntimeCalibrationSensorConfig {
 
 	bool accelCalibrated[3];
 	float A_off[3];
+
+	// Full first-order error model: corrected = M * (raw - bias). The bias
+	// terms are the existing A_off / G_off1 above; these are the M matrices,
+	// row-major 3x3.
+	//
+	// Appended rather than interleaved so that a calibration written by an
+	// older firmware -- which is simply shorter -- can still be read, with
+	// these defaulted. See Configuration::loadSensors.
+	//
+	// `errorModelValid` false means "treat M as identity", which is not the
+	// same as a zeroed matrix: a zeroed M would multiply every sample to zero.
+	bool errorModelValid;
+	float A_M[9];
+	float G_M[9];
 };
 
 struct MPU6050SensorConfig {
