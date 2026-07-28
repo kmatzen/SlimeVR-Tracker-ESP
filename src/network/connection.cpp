@@ -706,6 +706,38 @@ void Connection::update() {
 			returnLastPacket(len);
 			break;
 
+		case ReceivePacketType::TimeSync: {
+			// Fills in the middle two timestamps of the four-timestamp exchange
+			// the server uses to estimate this tracker's clock offset and rate.
+			//
+			// Both readings are taken as close to the wire as possible. Anything
+			// counted between arrival and the receive stamp, or between the
+			// transmit stamp and the actual send, is charged to the network path
+			// instead of to the tracker, and biases the server's offset estimate
+			// by half of it.
+			if (len < 20) {
+				m_Logger.warn("Wrong time sync packet");
+				break;
+			}
+
+			// Layout after the 4-byte type and 8-byte packet number:
+			//   int64 serverTx (echoed back unchanged)
+			//   uint32 trackerRx
+			//   uint32 trackerTx
+			const uint32_t trackerRx = micros();
+
+			MUST(sendPacketCallback(SendPacketType::TimeSync, [&]() {
+				// Echo the server's transmit time so it can match the reply to
+				// the request; a stale reply must not be folded into the
+				// estimate.
+				MUST_TRANSFER_BOOL(sendBytes(m_Packet + 12, 8));
+				MUST_TRANSFER_BOOL(sendInt(trackerRx));
+				MUST_TRANSFER_BOOL(sendInt(micros()));
+				return true;
+			}));
+			break;
+		}
+
 		case ReceivePacketType::SensorInfo: {
 			if (len < 6) {
 				m_Logger.warn("Wrong sensor info packet");

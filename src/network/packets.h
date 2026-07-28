@@ -55,6 +55,7 @@ enum class SendPacketType : uint8_t {
 	AcknowledgeConfigChange = 24,
 	FlexData = 26,
 	// PositionData = 27,
+	TimeSync = 28,
 	Bundle = 100,
 	Inspection = 105,
 };
@@ -69,6 +70,7 @@ enum class ReceivePacketType : uint8_t {
 	SensorInfo = 15,
 	FeatureFlags = 22,
 	SetConfigFlag = 25,
+	TimeSync = 28,
 };
 
 enum class InspectionPacketType : uint8_t {
