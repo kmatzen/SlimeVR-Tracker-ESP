@@ -77,6 +77,9 @@ public:
 		// EXAMPLE_FEATURE,
 		B64_WIFI_SCANNING = 1,
 		SENSOR_CONFIG = 2,
+		/// Answers PACKET_TIME_SYNC (28) with this tracker's own clock readings,
+		/// so the server can estimate its offset and rate.
+		TIME_SYNC = 3,
 		// Add new flags here
 
 		BITS_TOTAL,
@@ -86,7 +89,8 @@ public:
 	static constexpr const std::initializer_list<EFirmwareFeatureFlags> flagsEnabled = {
 		// EXAMPLE_FEATURE,
 		B64_WIFI_SCANNING,
-		SENSOR_CONFIG
+		SENSOR_CONFIG,
+		TIME_SYNC
 		// Add enabled flags here
 	};
 
