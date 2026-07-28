@@ -135,12 +135,28 @@ m/s² — on the safe side, but not by much, and mechanical vibration eats the
 margin. If it is ever exceeded, drift degrades by two orders of magnitude
 *silently*.
 
-**This is a hypothesis, not a conclusion.** It rests on a white-noise
-accelerometer model, and real noise is not white. What is robust is the
-*structure*: there is a cliff, and the shipped value is near it. Confirming it
-on real hardware is Bench Test A below, and that is exactly the point — the
-harness turns "these constants look suspicious" into a specific, cheap,
-falsifiable measurement.
+**This was a hypothesis, and Bench Test A has now falsified the alarming part
+of it.** Measured on a real LSM6DSV over a 28-minute static capture:
+
+| | tuned (`restThAcc = 0.06`) | stock (`1.418598`) |
+| --- | --- | --- |
+| `first_rest_sec` | 2.25 s | 2.66 s |
+| `heading_drift_deg_per_min` | 0.0187 | 0.0186 |
+
+Rest is detected in both cases and the drift difference is noise. The measured
+per-sample accelerometer noise was **0.00686 m/s²**, against a cliff located
+between 0.010 and 0.020 — so the real part sits about 1.5× clear of it.
+
+The *mechanism* is real: put `restThAcc` below the noise floor and rest is never
+detected, bias estimation never runs, and drift degrades by two orders of
+magnitude. What was wrong was the risk estimate, because the synthetic noise
+model (0.020 m/s²) was about 3× pessimistic and therefore landed on the wrong
+side of a cliff the hardware is clear of.
+
+That is the harness working as intended, and it is worth being blunt about the
+lesson: a synthetic model can put you confidently on the wrong side of a real
+threshold. Synthetic data is the right tool for *finding* a cliff and a poor one
+for deciding whether you are near it. Use it to reason, then measure.
 
 ## Bench tests on real hardware
 
@@ -272,14 +288,18 @@ Add to the `[env]` section of `platformio.ini`, or pass via
 build_flags =
   ${env.build_flags}
   -D RAW_SAMPLE_LOGGING
-  -D serialBaudRate=921600
+  -D serialBaudRate=460800
 ```
 
 Raise the baud rate. An LSM6DSV at 240 Hz gyro / 120 Hz accel produces roughly
 9 KB/s, and 115200 baud carries about 11.5 KB/s — it fits, but with only ~20%
 headroom, and a faster IMU will not fit at all. **If the link saturates, serial
 writes block and the sample timing is perturbed, which corrupts the very thing
-you are measuring.** 921600 leaves plenty of margin.
+you are measuring.**
+
+460800 is the recommended rate: 5× the headroom needed, and verified working.
+921600 produced unreadable output on the CH340 adapter tested, so prefer 460800
+unless you have confirmed the higher rate on your own hardware.
 
 Only one IMU is logged. If your board has two, select which with
 `-D RAW_SAMPLE_LOGGING_SENSOR_ID=1` (default 0).
