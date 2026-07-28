@@ -463,6 +463,25 @@ unresponsive bus would set a NACK; reading exactly zero means the master never
 starts a cycle at all. A pass-through probe, which bridges SDX/SCX onto the host
 I2C bus, found no device at `0x14`, `0x15` or any other address tried.
 
+**Hypotheses tested on hardware and refuted.** Each was applied, the register
+write was verified to have taken effect, and the failure was unchanged:
+
+| Hypothesis | Test | Result |
+| --- | --- | --- |
+| Aux bus has no pull-ups | Enable `SHUB_PU_EN` before every transaction, not just before polling | Was a real defect, fixed; failure unchanged |
+| SDX/SCX held by the OIS/SPI2 interface | `OIS_CTRL_FROM_UI=1`, pulse `SPI2_RESET`, `UI_CTRL1_OIS=0x00` (verified reading back `0x00`) | Refuted |
+| One hub cycle is slower than the timeout | Raise the timeout from 50 ms to 500 ms | Refuted |
+| `START_CONFIG` polarity inverted vs LSM6DSO | Flip bit 5 (`MASTER_CONFIG=0x64`, verified in readback) | Refuted |
+| Bank switch not taking effect | Read `WHO_AM_I` inside and outside the bank | Bank works both ways |
+| Config writes not landing | Read back all four hub registers | All correct |
+
+Note what a dead auxiliary bus would look like: the master would still run a
+cycle and set `SENS_HUB_ENDOP` together with `SLAVE0_NACK`. Reading exactly
+`0x00` is a stronger statement than "nothing answered" -- the master is not
+starting. That points at the LSM6DSV side rather than the BMM350 side, and it is
+why the hardware hypotheses below are listed after the firmware ones despite the
+pass-through probe finding nothing.
+
 **Remaining hypotheses, in the order worth testing:**
 
 1. **No 1.8 V rail.** The BMM350's VDD comes from U8 (AP7343D-18). Measure across

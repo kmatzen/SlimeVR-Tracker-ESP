@@ -83,6 +83,15 @@ struct LSM6DSSensorHub {
 	// Main-page registers.
 	static constexpr uint8_t FuncCfgAccess = 0x01;
 	static constexpr uint8_t FuncCfgShubRegAccess = 1 << 6;
+	// Hands OIS control from the SPI2 pins to the primary interface.
+	static constexpr uint8_t FuncCfgOisCtrlFromUi = 1 << 0;
+	static constexpr uint8_t FuncCfgSpi2Reset = 1 << 1;
+	// UI_CTRL1_OIS from the primary interface. Same address as SPI2_CTRL1_OIS,
+	// which is the same register seen from the auxiliary side.
+	static constexpr uint8_t UiCtrl1Ois = 0x70;
+	static constexpr uint8_t UiCtrl1OisSpi2ReadEn = 1 << 0;
+	static constexpr uint8_t UiCtrl1OisGyroEn = 1 << 1;
+	static constexpr uint8_t UiCtrl1OisAccelEn = 1 << 2;
 	static constexpr uint8_t IfCfg = 0x03;
 	static constexpr uint8_t IfCfgShubPuEn = 1 << 6;
 	// STATUS_MASTER mirrored into the main page, so completion can be polled
@@ -107,6 +116,15 @@ struct LSM6DSSensorHub {
 	static constexpr uint8_t MasterConfigWriteOnce = 1 << 6;
 	static constexpr uint8_t MasterConfigRstMasterRegs = 1 << 7;
 	static constexpr uint8_t Slv0ConfigBatchEn = 1 << 3;
+	static constexpr uint8_t MasterConfigStartConfig = 1 << 5;
+
+	// Experiment: which polarity of START_CONFIG selects the accelerometer
+	// data-ready trigger. Build with -D LSM6DS_SHUB_START_CONFIG=1 to flip it.
+#ifdef LSM6DS_SHUB_START_CONFIG
+	static constexpr uint8_t MasterConfigTrigger = MasterConfigStartConfig;
+#else
+	static constexpr uint8_t MasterConfigTrigger = 0;
+#endif
 
 	/**
 	 * One-shot diagnostic: bridge the auxiliary bus onto the main I2C bus and
@@ -123,6 +141,9 @@ struct LSM6DSSensorHub {
 			return;
 		}
 		m_passThroughProbed = true;
+
+		disableOisInterface();
+		enableAuxPullups();
 
 		enterShubBank(true);
 		writeShub(MasterConfig, 0);  // master off before switching the mux
@@ -161,6 +182,7 @@ struct LSM6DSSensorHub {
 	/** Slave address of the auxiliary device, 7-bit. */
 	void setAuxId(uint8_t deviceId) {
 		m_auxId = deviceId;
+		disableOisInterface();
 		enableAuxPullups();
 	}
 
@@ -172,6 +194,55 @@ struct LSM6DSSensorHub {
 	 * Blueberry does not), and without them every hub transaction simply never
 	 * completes.
 	 */
+	/**
+	 * Releases the SDX/SCX pins from the OIS / SPI2 auxiliary interface.
+	 *
+	 * On LSM6DSV those two pins are shared: they are either the SPI2 (optical
+	 * image stabilisation) slave interface or the sensor hub's I2C master, and
+	 * they cannot be both. While SPI2 owns them the hub master has nothing to
+	 * drive, which presents as the master never starting a cycle at all --
+	 * STATUS_MASTER reading 0x00 with neither an end-of-operation nor a NACK
+	 * bit, exactly what this driver saw on hardware.
+	 *
+	 * OIS_CTRL_FROM_UI moves control of the OIS chain from the SPI2 pins to the
+	 * primary interface, which is what makes UI_CTRL1_OIS writable here at all;
+	 * clearing that register then switches the chain off.
+	 */
+	void disableOisInterface() {
+		const uint8_t access = m_shubRegisterInterface.readReg(FuncCfgAccess);
+		m_shubRegisterInterface.writeReg(
+			FuncCfgAccess,
+			static_cast<uint8_t>(access | FuncCfgOisCtrlFromUi)
+		);
+		delay(1);
+
+		// Reset the SPI2 block so it releases the pins, then leave the reset.
+		m_shubRegisterInterface.writeReg(
+			FuncCfgAccess,
+			static_cast<uint8_t>(access | FuncCfgOisCtrlFromUi | FuncCfgSpi2Reset)
+		);
+		delay(1);
+		m_shubRegisterInterface.writeReg(
+			FuncCfgAccess,
+			static_cast<uint8_t>(access | FuncCfgOisCtrlFromUi)
+		);
+		delay(1);
+
+		// Accelerometer, gyroscope and SPI2 read paths of the OIS chain, all off.
+		m_shubRegisterInterface.writeReg(UiCtrl1Ois, 0x00);
+		delay(1);
+
+		if (ShubDebug) {
+			const uint8_t ois = m_shubRegisterInterface.readReg(UiCtrl1Ois);
+			const uint8_t acc = m_shubRegisterInterface.readReg(FuncCfgAccess);
+			m_shubLogger.info(
+				"OIS disable: UI_CTRL1_OIS=0x%02x FUNC_CFG_ACCESS=0x%02x",
+				ois,
+				acc
+			);
+		}
+	}
+
 	void enableAuxPullups() {
 		const uint8_t ifCfg = m_shubRegisterInterface.readReg(IfCfg);
 		m_shubRegisterInterface.writeReg(IfCfg, ifCfg | IfCfgShubPuEn);
@@ -183,7 +254,10 @@ struct LSM6DSSensorHub {
 		writeShub(Slv0Add, static_cast<uint8_t>((m_auxId << 1) | 0x01));
 		writeShub(Slv0SubAdd, address);
 		writeShub(Slv0Config, 1);  // one byte, not batched into FIFO
-		writeShub(MasterConfig, MasterConfigWriteOnce | MasterConfigMasterOn);
+		writeShub(
+			MasterConfig,
+			MasterConfigWriteOnce | MasterConfigMasterOn | MasterConfigTrigger
+		);
 
 		// Read the configuration back before letting the hub run. This
 		// separates "the writes never landed" from "the writes landed but the
@@ -231,7 +305,10 @@ struct LSM6DSSensorHub {
 		writeShub(Slv0SubAdd, address);
 		writeShub(DataWriteSlv0, value);
 		writeShub(Slv0Config, 0);  // no reads
-		writeShub(MasterConfig, MasterConfigWriteOnce | MasterConfigMasterOn);
+		writeShub(
+			MasterConfig,
+			MasterConfigWriteOnce | MasterConfigMasterOn | MasterConfigTrigger
+		);
 		enterShubBank(false);
 
 		const bool ok = waitForEndOp();
@@ -381,7 +458,12 @@ private:
 	 * this would otherwise hang the tracker forever.
 	 */
 	bool waitForEndOp() {
-		constexpr uint32_t timeoutMillis = 50;
+		// Generous on purpose. The hub cycles at SHUB_ODR, whose default is not
+		// necessarily fast, and a single cycle has to complete before
+		// SENS_HUB_ENDOP appears. A timeout shorter than one cycle is
+		// indistinguishable from a hub that never runs -- which is precisely
+		// the ambiguity this driver spent a bring-up session stuck in.
+		constexpr uint32_t timeoutMillis = 500;
 		const uint32_t start = millis();
 		while (millis() - start < timeoutMillis) {
 			const uint8_t status
