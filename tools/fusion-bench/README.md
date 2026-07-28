@@ -439,6 +439,49 @@ first that fails tells you exactly where the problem is.
 Build with `serialDebug` set to `true` in `src/debug.h` so the driver's log
 output is visible.
 
+### Hardware bring-up results (CheeseCake "Blueberry", LSM6DSV + BMM350)
+
+Run on a real board. Build with `-D LSM6DS_SHUB_DEBUG` to reproduce these
+diagnostics.
+
+**Confirmed working on silicon:**
+
+- LSM6DSV detected and streaming; measured timesteps 0.004161 s gyro /
+  0.008323 s accel, i.e. exactly the nominal 240/120 Hz.
+- `IMUConsts::SupportsMags` is true for LSM6DSV, so the magnetometer path is
+  compiled in and `MagDriver` runs its detection loop. This was the gate that
+  previously discarded the whole path.
+- Sensor-hub bank entry *and* exit: `WHO_AM_I` reads `0x70` outside the bank and
+  `0x00` inside it, both ways, on every switch.
+- Every hub configuration write lands: `SLV0_ADD=0xf9` (= `0x7c<<1|1`),
+  `SLV0_SUBADD=0x00`, `SLV0_CONFIG=0x01`, `MASTER_CONFIG=0x44`.
+
+**Not working:** the hub never performs a transaction. `STATUS_MASTER` reads
+`0x00` from both the main-page mirror and the in-bank register — crucially,
+neither `SENS_HUB_ENDOP` *nor* any NACK bit. A hub that ran a cycle against an
+unresponsive bus would set a NACK; reading exactly zero means the master never
+starts a cycle at all. A pass-through probe, which bridges SDX/SCX onto the host
+I2C bus, found no device at `0x14`, `0x15` or any other address tried.
+
+**Remaining hypotheses, in the order worth testing:**
+
+1. **No 1.8 V rail.** The BMM350's VDD comes from U8 (AP7343D-18). Measure across
+   C15: it should read 1.8 V. This is a 30-second check with a multimeter and
+   would settle both this and the next item. U6 and U8 being populated does not
+   prove the rail is up.
+2. **Solder joint on U6.** The BMM350 is a small package; populated is not the
+   same as connected. A missing SDX/SCX or GND joint gives exactly this
+   signature.
+3. **Pin multiplexing.** On LSM6DSV the SDX/SCX pins are shared with the
+   OIS/SPI2 auxiliary interface. If they default to that function the hub cannot
+   drive them, which would explain the master never starting. This is the most
+   likely remaining *firmware* cause and the next thing to try in code.
+
+Note the board designer's own caution sheet says *"The magnetometer is an
+experimental and might not work functionally"*, and the board ships in `MAG` and
+`[NO_MAG]` BOM variants — so a non-functional magnetometer is a documented
+possibility rather than a surprise.
+
 ### Milestone 1 — the hub can read the magnetometer's chip ID
 
 This is the decisive test, and it validates most of the risk in one shot: bank

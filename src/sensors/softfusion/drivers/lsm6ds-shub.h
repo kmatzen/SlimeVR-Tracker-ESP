@@ -23,6 +23,8 @@
 
 #pragma once
 
+#include <Wire.h>
+
 #include <cstdint>
 
 #include "../magdriver.h"
@@ -35,13 +37,20 @@ namespace SlimeVR::Sensors::SoftFusion::Drivers {
  * LSM6DS-family sensor hub (the IMU acting as I2C master for an auxiliary
  * sensor).
  *
- * *** NOT YET VALIDATED ON HARDWARE. ***
+ * *** PARTIALLY VALIDATED ON HARDWARE (CheeseCake "Blueberry", LSM6DSV). ***
  *
- * Register addresses and bit positions are taken from the LSM6DSV datasheet and
- * ST's own `lsm6dsv_reg.h`. The code compiles and the sequences follow the
- * documented procedure, but none of it has been run against a real part. Treat
- * every value here as a hypothesis until the bring-up procedure in
- * tools/fusion-bench/README.md has been walked through.
+ * Confirmed working on real silicon:
+ *   - register bank entry and exit (WHO_AM_I reads 0x70 outside the bank and
+ *     0x00 inside it, so the switch demonstrably takes effect both ways);
+ *   - every hub configuration write lands (SLV0_ADD, SLV0_SUBADD, SLV0_CONFIG
+ *     and MASTER_CONFIG all read back exactly as written);
+ *   - the address encoding: a 7-bit slave address shifted left with RW in bit 0.
+ *
+ * NOT confirmed: that the hub ever performs a transaction. On the board tested,
+ * STATUS_MASTER stays 0x00 -- neither SENS_HUB_ENDOP nor any NACK bit is set,
+ * which means the master never starts a cycle rather than starting one and
+ * failing. A pass-through probe of the auxiliary bus also found no device.
+ * See tools/fusion-bench/README.md for the remaining hypotheses.
  *
  * Two things about this interface are worth knowing before changing it:
  *
@@ -60,6 +69,16 @@ struct LSM6DSSensorHub {
 	LSM6DSSensorHub(RegisterInterface& registerInterface, Logging::Logger& logger)
 		: m_shubRegisterInterface(registerInterface)
 		, m_shubLogger(logger) {}
+
+	// Bring-up diagnostics: bank-switch verification, configuration readback and
+	// the pass-through bus probe. Off by default -- they are one-shot and cheap,
+	// but they are debugging scaffolding, not behaviour. Build with
+	// -D LSM6DS_SHUB_DEBUG to enable.
+#ifdef LSM6DS_SHUB_DEBUG
+	static constexpr bool ShubDebug = true;
+#else
+	static constexpr bool ShubDebug = false;
+#endif
 
 	// Main-page registers.
 	static constexpr uint8_t FuncCfgAccess = 0x01;
@@ -81,14 +100,82 @@ struct LSM6DSSensorHub {
 	static constexpr uint8_t Slv1SubAdd = 0x19;
 	static constexpr uint8_t Slv1Config = 0x1a;
 	static constexpr uint8_t DataWriteSlv0 = 0x21;
+	static constexpr uint8_t StatusMaster = 0x22;
 
 	static constexpr uint8_t MasterConfigMasterOn = 1 << 2;
+	static constexpr uint8_t MasterConfigPassThrough = 1 << 4;
 	static constexpr uint8_t MasterConfigWriteOnce = 1 << 6;
 	static constexpr uint8_t MasterConfigRstMasterRegs = 1 << 7;
 	static constexpr uint8_t Slv0ConfigBatchEn = 1 << 3;
 
+	/**
+	 * One-shot diagnostic: bridge the auxiliary bus onto the main I2C bus and
+	 * probe for the magnetometer directly.
+	 *
+	 * This is the test that separates "my hub configuration is wrong" from "the
+	 * auxiliary bus has nothing alive on it". In pass-through the IMU stops
+	 * driving SDX/SCX and connects them straight to the host bus, so an ACK
+	 * here means the part is present and powered and the fault is in the hub
+	 * setup; silence means the hub was never the problem.
+	 */
+	void probeAuxPassThrough() {
+		if (!ShubDebug || m_passThroughProbed) {
+			return;
+		}
+		m_passThroughProbed = true;
+
+		enterShubBank(true);
+		writeShub(MasterConfig, 0);  // master off before switching the mux
+		enterShubBank(false);
+		delay(2);
+		enterShubBank(true);
+		writeShub(MasterConfig, MasterConfigPassThrough);
+		enterShubBank(false);
+		delay(5);
+
+		uint8_t found = 0;
+		for (uint8_t addr :
+			 {uint8_t{0x14},
+			  uint8_t{0x15},
+			  uint8_t{0x19},
+			  uint8_t{0x7c},
+			  uint8_t{0x0d},
+			  uint8_t{0x30}}) {
+			Wire.beginTransmission(addr);
+			if (Wire.endTransmission() == 0) {
+				m_shubLogger.info("Pass-through: device ACKed at 0x%02x", addr);
+				found++;
+			}
+		}
+		if (found == 0) {
+			m_shubLogger.error("Pass-through: no device responded on the auxiliary bus"
+			);
+		}
+
+		enterShubBank(true);
+		writeShub(MasterConfig, 0);
+		enterShubBank(false);
+		delay(2);
+	}
+
 	/** Slave address of the auxiliary device, 7-bit. */
-	void setAuxId(uint8_t deviceId) { m_auxId = deviceId; }
+	void setAuxId(uint8_t deviceId) {
+		m_auxId = deviceId;
+		enableAuxPullups();
+	}
+
+	/**
+	 * Internal pull-ups on the auxiliary bus.
+	 *
+	 * Must happen before *any* transaction, not just before continuous polling:
+	 * boards commonly fit no external pull-ups on SDX/SCX (the CheeseCake
+	 * Blueberry does not), and without them every hub transaction simply never
+	 * completes.
+	 */
+	void enableAuxPullups() {
+		const uint8_t ifCfg = m_shubRegisterInterface.readReg(IfCfg);
+		m_shubRegisterInterface.writeReg(IfCfg, ifCfg | IfCfgShubPuEn);
+	}
 
 	uint8_t readAux(uint8_t address) {
 		enterShubBank(true);
@@ -97,6 +184,26 @@ struct LSM6DSSensorHub {
 		writeShub(Slv0SubAdd, address);
 		writeShub(Slv0Config, 1);  // one byte, not batched into FIFO
 		writeShub(MasterConfig, MasterConfigWriteOnce | MasterConfigMasterOn);
+
+		// Read the configuration back before letting the hub run. This
+		// separates "the writes never landed" from "the writes landed but the
+		// hub never started", which the STATUS_MASTER value alone cannot.
+		if (ShubDebug && !m_configChecked) {
+			m_configChecked = true;
+			const uint8_t rAdd = m_shubRegisterInterface.readReg(Slv0Add);
+			const uint8_t rSub = m_shubRegisterInterface.readReg(Slv0SubAdd);
+			const uint8_t rCfg = m_shubRegisterInterface.readReg(Slv0Config);
+			const uint8_t rMst = m_shubRegisterInterface.readReg(MasterConfig);
+			m_shubLogger.info(
+				"Shub cfg readback: SLV0_ADD=0x%02x SLV0_SUBADD=0x%02x "
+				"SLV0_CONFIG=0x%02x MASTER_CONFIG=0x%02x",
+				rAdd,
+				rSub,
+				rCfg,
+				rMst
+			);
+		}
+
 		enterShubBank(false);
 
 		const bool ok = waitForEndOp();
@@ -231,6 +338,37 @@ private:
 							   ? static_cast<uint8_t>(current | FuncCfgShubRegAccess)
 							   : static_cast<uint8_t>(current & ~FuncCfgShubRegAccess);
 		m_shubRegisterInterface.writeReg(FuncCfgAccess, next);
+
+		// Verified once, because a silently failed bank switch is worse than a
+		// failed magnetometer: the sensor-hub register addresses collide with
+		// CTRL6/CTRL7/CTRL8 on the main page, so every "hub configuration"
+		// write would instead be rewriting the gyroscope and accelerometer
+		// full-scale settings.
+		if (ShubDebug && enabled && !m_bankChecked) {
+			m_bankChecked = true;
+			const uint8_t readback = m_shubRegisterInterface.readReg(FuncCfgAccess);
+			const uint8_t reg0f = m_shubRegisterInterface.readReg(0x0f);
+			// Also verify the *exit*. The hub does not run while the bank is
+			// held open, so a silently failed exit would look exactly like a
+			// hub that never starts -- and would also make the STATUS_MASTER
+			// poll read a hub register rather than the main-page mirror.
+			m_shubRegisterInterface.writeReg(
+				FuncCfgAccess,
+				static_cast<uint8_t>(next & ~FuncCfgShubRegAccess)
+			);
+			const uint8_t outAccess = m_shubRegisterInterface.readReg(FuncCfgAccess);
+			const uint8_t outWho = m_shubRegisterInterface.readReg(0x0f);
+			m_shubRegisterInterface.writeReg(FuncCfgAccess, next);
+
+			m_shubLogger.info(
+				"Shub bank: in access=0x%02x reg0f=0x%02x | out access=0x%02x "
+				"reg0f=0x%02x (expect 0x70)",
+				readback,
+				reg0f,
+				outAccess,
+				outWho
+			);
+		}
 	}
 
 	void writeShub(uint8_t reg, uint8_t value) {
@@ -253,6 +391,21 @@ private:
 			}
 			delay(1);
 		}
+
+		// On failure, report both status registers. If the main-page mirror is
+		// the wrong address for this part it will read as a constant while the
+		// in-bank one moves, which distinguishes "polling the wrong register"
+		// from "the hub never ran".
+		const uint8_t mainPage = m_shubRegisterInterface.readReg(StatusMasterMainPage);
+		enterShubBank(true);
+		const uint8_t inBank = m_shubRegisterInterface.readReg(StatusMaster);
+		enterShubBank(false);
+		m_shubLogger.error(
+			"Sensor hub timeout: STATUS_MASTER mainpage(0x39)=0x%02x "
+			"bank(0x22)=0x%02x",
+			mainPage,
+			inBank
+		);
 		return false;
 	}
 
@@ -260,6 +413,9 @@ private:
 	Logging::Logger& m_shubLogger;
 
 	uint8_t m_auxId = 0;
+	bool m_bankChecked = false;
+	bool m_configChecked = false;
+	bool m_passThroughProbed = false;
 	bool m_auxPolling = false;
 	bool m_auxSplit = false;
 	uint8_t m_auxDummyBytes = 0;

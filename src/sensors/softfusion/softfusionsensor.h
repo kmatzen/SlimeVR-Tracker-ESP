@@ -382,16 +382,11 @@ public:
 
 		calibrator.checkStartupCalibration();
 
-		m_rawLogger.begin(
-			sensorId,
-			SensorType::Name,
-			calibrator.getAccelTimestep(),
-			calibrator.getGyroTimestep(),
-			Consts::AScale,
-			Consts::GScale
-		);
-
 		if constexpr (Consts::SupportsMags) {
+			// Diagnostic, only on drivers that implement it.
+			if constexpr (requires(SensorType& i) { i.probeAuxPassThrough(); }) {
+				m_sensor.probeAuxPassThrough();
+			}
 			magDriver.init(
 				SoftFusion::MagInterface{
 					.readByte
@@ -414,6 +409,19 @@ public:
 				magDriver.startPolling();
 			}
 		}
+
+		// Started last, after every other subsystem has finished logging. The
+		// raw stream is dense enough to bury anything printed after it, and the
+		// magnetometer detection lines are exactly what a bring-up needs to
+		// read.
+		m_rawLogger.begin(
+			sensorId,
+			SensorType::Name,
+			calibrator.getAccelTimestep(),
+			calibrator.getGyroTimestep(),
+			Consts::AScale,
+			Consts::GScale
+		);
 
 		toggles.onToggleChange([&](SensorToggles toggle, bool value) {
 			if (toggle == SensorToggles::MagEnabled) {
