@@ -181,6 +181,13 @@ bool MagDriver::init(MagInterface&& interface, bool supports9ByteMags) {
 		logger.info("Trying mag %s!", mag.name);
 
 		uint8_t whoAmI = interface.readByte(mag.whoAmIReg);
+		logger.debug(
+			"%s: read 0x%02x from reg 0x%02x, expected 0x%02x",
+			mag.name,
+			whoAmI,
+			mag.whoAmIReg,
+			mag.expectedWhoAmI
+		);
 		if (whoAmI != mag.expectedWhoAmI) {
 			continue;
 		}

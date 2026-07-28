@@ -96,8 +96,15 @@ struct LSM6DSSensorHub {
 	static constexpr uint8_t IfCfgShubPuEn = 1 << 6;
 	// STATUS_MASTER mirrored into the main page, so completion can be polled
 	// without holding the embedded-function bank open.
-	static constexpr uint8_t StatusMasterMainPage = 0x39;
+	//
+	// 0x48 per the LSM6DSV datasheet (DS13476 Rev 2, table 390 / register map
+	// p50). This is NOT 0x39 as on some other parts in the family: on LSM6DSV
+	// 0x39 is UI_OUTZ_H_A_OIS_DualC, an OIS output register, which reads ~0 on
+	// a stationary device and therefore looks exactly like a hub that never
+	// completes.
+	static constexpr uint8_t StatusMasterMainPage = 0x48;
 	static constexpr uint8_t StatusMasterEndOp = 1 << 0;
+	static constexpr uint8_t StatusMasterSlave0Nack = 1 << 3;
 
 	// Embedded-function bank registers, only reachable with SHUB_REG_ACCESS set.
 	static constexpr uint8_t SensorHub1 = 0x02;
@@ -116,15 +123,19 @@ struct LSM6DSSensorHub {
 	static constexpr uint8_t MasterConfigWriteOnce = 1 << 6;
 	static constexpr uint8_t MasterConfigRstMasterRegs = 1 << 7;
 	static constexpr uint8_t Slv0ConfigBatchEn = 1 << 3;
+
+	// SHUB_ODR occupies SLV0_CONFIG[7:5] and is the rate at which the master
+	// communicates: 000 = 1.875 Hz ... 100 = 120 Hz (reset default), 101 = 240
+	// Hz. Writing SLV0_CONFIG without these bits silently selects 1.875 Hz --
+	// a 533 ms cycle, which reads as a hub that never responds. Matched to the
+	// accelerometer ODR.
+	static constexpr uint8_t Slv0ConfigOdr120Hz = 0b100 << 5;
 	static constexpr uint8_t MasterConfigStartConfig = 1 << 5;
 
-	// Experiment: which polarity of START_CONFIG selects the accelerometer
-	// data-ready trigger. Build with -D LSM6DS_SHUB_START_CONFIG=1 to flip it.
-#ifdef LSM6DS_SHUB_START_CONFIG
-	static constexpr uint8_t MasterConfigTrigger = MasterConfigStartConfig;
-#else
+	// START_CONFIG = 0 selects the accelerometer/gyroscope data-ready as the
+	// hub trigger; 1 would wait on an external INT2 edge. Confirmed against the
+	// datasheet (table 428), so this is not a knob.
 	static constexpr uint8_t MasterConfigTrigger = 0;
-#endif
 
 	/**
 	 * One-shot diagnostic: bridge the auxiliary bus onto the main I2C bus and
@@ -253,7 +264,10 @@ struct LSM6DSSensorHub {
 		// Bit 0 set selects a read.
 		writeShub(Slv0Add, static_cast<uint8_t>((m_auxId << 1) | 0x01));
 		writeShub(Slv0SubAdd, address);
-		writeShub(Slv0Config, 1);  // one byte, not batched into FIFO
+		writeShub(
+			Slv0Config,
+			static_cast<uint8_t>(Slv0ConfigOdr120Hz | 1)
+		);  // one byte, not batched
 		writeShub(
 			MasterConfig,
 			MasterConfigWriteOnce | MasterConfigMasterOn | MasterConfigTrigger
@@ -280,7 +294,27 @@ struct LSM6DSSensorHub {
 
 		enterShubBank(false);
 
-		const bool ok = waitForEndOp();
+		uint8_t status = 0;
+		const bool ok = waitForEndOp(status);
+
+		// A NACK means the hub ran its cycle and the slave did not acknowledge:
+		// the master is fine and there is nothing answering at that address.
+		// Distinguishing this from a hub that never started is the whole reason
+		// this is logged separately from the timeout path.
+		if (status & StatusMasterSlave0Nack) {
+			m_shubLogger.error(
+				"Aux device 0x%02x did not acknowledge (STATUS_MASTER=0x%02x)",
+				m_auxId,
+				status
+			);
+		} else if (ShubDebug) {
+			m_shubLogger.info(
+				"Aux read 0x%02x from 0x%02x: STATUS_MASTER=0x%02x",
+				address,
+				m_auxId,
+				status
+			);
+		}
 
 		enterShubBank(true);
 		const uint8_t value = m_shubRegisterInterface.readReg(SensorHub1);
@@ -311,7 +345,15 @@ struct LSM6DSSensorHub {
 		);
 		enterShubBank(false);
 
-		const bool ok = waitForEndOp();
+		uint8_t status = 0;
+		const bool ok = waitForEndOp(status);
+		if (status & StatusMasterSlave0Nack) {
+			m_shubLogger.error(
+				"Aux device 0x%02x did not acknowledge a write (STATUS_MASTER=0x%02x)",
+				m_auxId,
+				status
+			);
+		}
 
 		enterShubBank(true);
 		writeShub(MasterConfig, 0);
@@ -356,7 +398,9 @@ struct LSM6DSSensorHub {
 			writeShub(Slv0SubAdd, dataReg);
 			writeShub(
 				Slv0Config,
-				static_cast<uint8_t>((dummyBytes + dataBytes) | Slv0ConfigBatchEn)
+				static_cast<uint8_t>(
+					(dummyBytes + dataBytes) | Slv0ConfigBatchEn | Slv0ConfigOdr120Hz
+				)
 			);
 			writeShub(Slv1Config, 0);
 		} else {
@@ -369,14 +413,18 @@ struct LSM6DSSensorHub {
 			writeShub(Slv0SubAdd, dataReg);
 			writeShub(
 				Slv0Config,
-				static_cast<uint8_t>((dummyBytes + firstData) | Slv0ConfigBatchEn)
+				static_cast<uint8_t>(
+					(dummyBytes + firstData) | Slv0ConfigBatchEn | Slv0ConfigOdr120Hz
+				)
 			);
 
 			writeShub(Slv1Add, static_cast<uint8_t>((m_auxId << 1) | 0x01));
 			writeShub(Slv1SubAdd, static_cast<uint8_t>(dataReg + firstData));
 			writeShub(
 				Slv1Config,
-				static_cast<uint8_t>((dummyBytes + secondData) | Slv0ConfigBatchEn)
+				static_cast<uint8_t>(
+					(dummyBytes + secondData) | Slv0ConfigBatchEn | Slv0ConfigOdr120Hz
+				)
 			);
 		}
 
@@ -457,7 +505,8 @@ private:
 	 * advances on accelerometer samples, so if the accelerometer is not running
 	 * this would otherwise hang the tracker forever.
 	 */
-	bool waitForEndOp() {
+	bool waitForEndOp(uint8_t& statusOut) {
+		statusOut = 0;
 		// Generous on purpose. The hub cycles at SHUB_ODR, whose default is not
 		// necessarily fast, and a single cycle has to complete before
 		// SENS_HUB_ENDOP appears. A timeout shorter than one cycle is
@@ -469,6 +518,10 @@ private:
 			const uint8_t status
 				= m_shubRegisterInterface.readReg(StatusMasterMainPage);
 			if (status & StatusMasterEndOp) {
+				// STATUS_MASTER is read-to-clear, so the value has to be
+				// captured here. Reading it again after this loop returns zero,
+				// which previously made every transaction look clean.
+				statusOut = status;
 				return true;
 			}
 			delay(1);

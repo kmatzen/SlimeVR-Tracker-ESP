@@ -441,65 +441,69 @@ output is visible.
 
 ### Hardware bring-up results (CheeseCake "Blueberry", LSM6DSV + BMM350)
 
-Run on a real board. Build with `-D LSM6DS_SHUB_DEBUG` to reproduce these
-diagnostics.
+Run on a real board. Build with `-D LSM6DS_SHUB_DEBUG` for these diagnostics.
 
-**Confirmed working on silicon:**
+**The sensor hub works.** It configures, runs I2C cycles, and reports their
+outcome. **The magnetometer does not respond**: every address tried returns
+`STATUS_MASTER = 0x09`, which is `SENS_HUB_ENDOP | SLAVE0_NACK` — the cycle
+completed and nothing acknowledged.
+
+```
+[ERROR] Aux device 0x14 did not acknowledge (STATUS_MASTER=0x09)
+```
+
+That is a hardware answer, and a definite one. A pass-through probe bridging
+SDX/SCX onto the host I2C bus independently finds nothing. The board designer's
+caution sheet says the magnetometer *"is an experimental and might not work
+functionally"*, and the board ships in `MAG` and `[NO_MAG]` BOM variants.
+
+Worth measuring before concluding the part is faulty: **1.8 V across C15**, the
+output of U8 (AP7343D-18) that supplies the BMM350's VDD. An unpowered part
+NACKs exactly like an absent one.
+
+#### Two datasheet bugs this found
+
+Both were in this driver, both silent, and each masked the other. Found by
+reading DS13476 Rev 2 directly after inference from the LSM6DSO family
+conventions had produced two confidently wrong diagnoses.
+
+1. **`STATUS_MASTER_MAINPAGE` is `0x48`, not `0x39`.** On LSM6DSV, `0x39` is
+   `UI_OUTZ_H_A_OIS_DualC` — an OIS output register, which reads ~0 on a
+   stationary tracker. Polling it meant end-of-operation was never observed no
+   matter what the hub did.
+
+2. **`SLV0_CONFIG` bits [7:5] are `SHUB_ODR`, whose reset default is `100` =
+   120 Hz.** Writing the register with just a `numop` value cleared them to
+   `000` = **1.875 Hz**, a 533 ms cycle — longer than the original 50 ms
+   timeout and marginal even against 500 ms.
+
+Together these produced `STATUS_MASTER = 0x00` with neither ENDOP nor NACK,
+which reads as "the master never starts". That inference was correct given the
+data and wrong about the cause, and it sent the investigation at the OIS/SPI2
+pin muxing and the trigger polarity — both of which were fine.
+
+`STATUS_MASTER` is also read-to-clear, so its value has to be captured inside
+the poll loop at the moment ENDOP is seen. Reading it afterwards returns zero
+and makes every transaction look clean.
+
+#### Confirmed working on silicon
 
 - LSM6DSV detected and streaming; measured timesteps 0.004161 s gyro /
-  0.008323 s accel, i.e. exactly the nominal 240/120 Hz.
-- `IMUConsts::SupportsMags` is true for LSM6DSV, so the magnetometer path is
-  compiled in and `MagDriver` runs its detection loop. This was the gate that
-  previously discarded the whole path.
-- Sensor-hub bank entry *and* exit: `WHO_AM_I` reads `0x70` outside the bank and
-  `0x00` inside it, both ways, on every switch.
-- Every hub configuration write lands: `SLV0_ADD=0xf9` (= `0x7c<<1|1`),
-  `SLV0_SUBADD=0x00`, `SLV0_CONFIG=0x01`, `MASTER_CONFIG=0x44`.
+  0.008323 s accel, exactly the nominal 240/120 Hz.
+- `SupportsMags` true for LSM6DSV, so the magnetometer path is compiled in.
+- Sensor-hub bank entry and exit: `WHO_AM_I` reads `0x70` outside and `0x00`
+  inside, both directions.
+- Configuration writes land: `SLV0_ADD=0xf9`, `SLV0_SUBADD`, `SLV0_CONFIG=0x81`
+  (120 Hz | 1 read), `MASTER_CONFIG=0x44`.
+- Hub cycles complete and report NACK status correctly.
 
-**Not working:** the hub never performs a transaction. `STATUS_MASTER` reads
-`0x00` from both the main-page mirror and the in-bank register — crucially,
-neither `SENS_HUB_ENDOP` *nor* any NACK bit. A hub that ran a cycle against an
-unresponsive bus would set a NACK; reading exactly zero means the master never
-starts a cycle at all. A pass-through probe, which bridges SDX/SCX onto the host
-I2C bus, found no device at `0x14`, `0x15` or any other address tried.
+#### Also verified against the datasheet
 
-**Hypotheses tested on hardware and refuted.** Each was applied, the register
-write was verified to have taken effect, and the failure was unchanged:
-
-| Hypothesis | Test | Result |
-| --- | --- | --- |
-| Aux bus has no pull-ups | Enable `SHUB_PU_EN` before every transaction, not just before polling | Was a real defect, fixed; failure unchanged |
-| SDX/SCX held by the OIS/SPI2 interface | `OIS_CTRL_FROM_UI=1`, pulse `SPI2_RESET`, `UI_CTRL1_OIS=0x00` (verified reading back `0x00`) | Refuted |
-| One hub cycle is slower than the timeout | Raise the timeout from 50 ms to 500 ms | Refuted |
-| `START_CONFIG` polarity inverted vs LSM6DSO | Flip bit 5 (`MASTER_CONFIG=0x64`, verified in readback) | Refuted |
-| Bank switch not taking effect | Read `WHO_AM_I` inside and outside the bank | Bank works both ways |
-| Config writes not landing | Read back all four hub registers | All correct |
-
-Note what a dead auxiliary bus would look like: the master would still run a
-cycle and set `SENS_HUB_ENDOP` together with `SLAVE0_NACK`. Reading exactly
-`0x00` is a stronger statement than "nothing answered" -- the master is not
-starting. That points at the LSM6DSV side rather than the BMM350 side, and it is
-why the hardware hypotheses below are listed after the firmware ones despite the
-pass-through probe finding nothing.
-
-**Remaining hypotheses, in the order worth testing:**
-
-1. **No 1.8 V rail.** The BMM350's VDD comes from U8 (AP7343D-18). Measure across
-   C15: it should read 1.8 V. This is a 30-second check with a multimeter and
-   would settle both this and the next item. U6 and U8 being populated does not
-   prove the rail is up.
-2. **Solder joint on U6.** The BMM350 is a small package; populated is not the
-   same as connected. A missing SDX/SCX or GND joint gives exactly this
-   signature.
-3. **Pin multiplexing.** On LSM6DSV the SDX/SCX pins are shared with the
-   OIS/SPI2 auxiliary interface. If they default to that function the hub cannot
-   drive them, which would explain the master never starting. This is the most
-   likely remaining *firmware* cause and the next thing to try in code.
-
-Note the board designer's own caution sheet says *"The magnetometer is an
-experimental and might not work functionally"*, and the board ships in `MAG` and
-`[NO_MAG]` BOM variants — so a non-functional magnetometer is a documented
-possibility rather than a surprise.
+- `START_CONFIG = 0` selects the accel/gyro data-ready trigger (table 428). An
+  earlier experiment flipping this was wrong.
+- `SLV0_ADD` is the 7-bit address in bits [7:1] with `rw_0` in bit 0 (table 430).
+- `AUX_SENS_ON = 00` means one sensor (table 428).
+- `STATUS_MASTER`: `SENS_HUB_ENDOP` bit 0, `SLAVE0_NACK` bit 3 (table 456).
 
 ### Milestone 1 — the hub can read the magnetometer's chip ID
 
