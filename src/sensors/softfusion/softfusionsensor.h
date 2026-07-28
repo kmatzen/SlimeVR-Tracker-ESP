@@ -227,6 +227,37 @@ public:
 		, m_sensor(registerInterface, m_Logger) {}
 	~SoftFusionSensor() override = default;
 
+	/**
+	 * FIFO overruns mean samples were dropped before fusion ever saw them.
+	 *
+	 * Without this there is no way to know it happened in the field: the
+	 * symptom is heading error that correlates with network conditions, which
+	 * looks like a fusion bug and is intermittent enough to be very hard to
+	 * pin on anything.
+	 *
+	 * Reported as a periodic count rather than per event, because the failure
+	 * mode is bursty and per-event logging would itself cost time in the sample
+	 * path.
+	 */
+	void reportFifoOverrunsIfNeeded() {
+		constexpr uint32_t reportIntervalMicros = 10'000'000;
+		const uint32_t now = micros();
+		if (now - m_lastFifoReportTime < reportIntervalMicros) {
+			return;
+		}
+		m_lastFifoReportTime = now;
+		if (m_fifoOverrunCount == m_lastReportedOverrunCount) {
+			return;
+		}
+		m_Logger.warn(
+			"FIFO overrun: %lu total (%lu since last report). Samples were "
+			"dropped before fusion saw them.",
+			static_cast<unsigned long>(m_fifoOverrunCount),
+			static_cast<unsigned long>(m_fifoOverrunCount - m_lastReportedOverrunCount)
+		);
+		m_lastReportedOverrunCount = m_fifoOverrunCount;
+	}
+
 	void checkSensorTimeout() {
 		uint32_t now = millis();
 		constexpr uint32_t sensorTimeoutMillis = 2e3;  // 2 seconds
@@ -277,49 +308,61 @@ public:
 			tempGradientCalculator.tick();
 		}
 
-		constexpr uint32_t targetPollIntervalMicros = 6000;
-		uint32_t elapsed = now - m_lastPollTime;
-		if (elapsed >= targetPollIntervalMicros) {
-			m_lastPollTime = now - (elapsed - targetPollIntervalMicros);
+		// Drain the FIFO every iteration, independent of the network send rate.
+		//
+		// Previously this lived inside the 100 Hz send branch, which made the
+		// FIFO the buffer for the whole pipeline: samples sat unprocessed for up
+		// to ~10 ms, and any hiccup -- a slow WiFi send, a reconnect, a long
+		// interrupt -- showed up as FIFO overrun and silently dropped samples.
+		// Dropped gyro samples are not recoverable; they are integrated-away
+		// rotation that never happened as far as the filter is concerned, which
+		// manifests as heading error correlated with network conditions.
+		//
+		// Draining here also means the filter sees an evenly spaced sample
+		// stream rather than bursts, which is what VQF's time constants assume.
+		const bool overwhelmed = m_sensor.bulkRead({
+			[&](const auto sample[3], float AccTs) {
+				processAccelSample(sample, AccTs);
+			},
+			[&](const auto sample[3], float GyrTs) {
+				processGyroSample(sample, GyrTs);
+			},
+			[&](int16_t sample, float TempTs) { processTempSample(sample, TempTs); },
+			[&](const int32_t sample[3], float MagTs) {
+				processMagSample(sample, MagTs);
+			},
+		});
+		if (overwhelmed) {
+			calibrator.signalOverwhelmed();
+			m_fifoOverrunCount++;
 		}
 
-		// send new fusion values when time is up
-		now = micros();
-		constexpr float maxSendRateHz = 100.0f;
-		constexpr uint32_t sendInterval = 1.0f / maxSendRateHz * 1e6f;
-		elapsed = now - m_lastRotationPacketSent;
-		if (elapsed >= sendInterval) {
-			auto overwhelmed = m_sensor.bulkRead({
-				[&](const auto sample[3], float AccTs) {
-					processAccelSample(sample, AccTs);
-				},
-				[&](const auto sample[3], float GyrTs) {
-					processGyroSample(sample, GyrTs);
-				},
-				[&](int16_t sample, float TempTs) {
-					processTempSample(sample, TempTs);
-				},
-				[&](const int32_t sample[3], float MagTs) {
-					processMagSample(sample, MagTs);
-				},
-			});
-			if (overwhelmed) {
-				calibrator.signalOverwhelmed();
-			}
-			if (!m_fusion.isUpdated()) {
-				checkSensorTimeout();
-				return;
-			}
+		if (m_fusion.isUpdated()) {
 			hadData = true;
 			m_lastRotationUpdateMillis = millis();
 			m_fusion.clearUpdated();
+		}
 
+		// Send the current fused orientation at a fixed rate. Fusion now runs at
+		// sensor rate and the network runs at network rate; neither paces the
+		// other.
+		now = micros();
+		constexpr float maxSendRateHz = 100.0f;
+		constexpr uint32_t sendInterval = 1.0f / maxSendRateHz * 1e6f;
+		uint32_t elapsed = now - m_lastRotationPacketSent;
+		if (elapsed >= sendInterval) {
 			m_lastRotationPacketSent = now - (elapsed - sendInterval);
+
+			// Rate-limited to the send cadence, as before: the check is cheap
+			// but the error path logs and emits a packet.
+			checkSensorTimeout();
 
 			setFusedRotation(m_fusion.getQuaternionQuat());
 			setAcceleration(m_fusion.getLinearAccVec());
 			optimistic_yield(100);
 		}
+
+		reportFifoOverrunsIfNeeded();
 
 		if (calibrationDetector.update(m_fusion)) {
 			markRestCalibrationComplete();
@@ -450,7 +493,6 @@ public:
 	Calib calibrator{m_fusion, m_sensor, sensorId, m_Logger, toggles};
 
 	SensorStatus m_status = SensorStatus::SENSOR_OFFLINE;
-	uint32_t m_lastPollTime = micros();
 	uint32_t m_lastRotationUpdateMillis = 0;
 	uint32_t m_lastRotationPacketSent = 0;
 	uint32_t m_lastTemperaturePacketSent = 0;
@@ -458,6 +500,10 @@ public:
 	RestCalibrationDetector calibrationDetector;
 
 	SoftFusion::MagDriver magDriver;
+
+	uint32_t m_fifoOverrunCount = 0;
+	uint32_t m_lastReportedOverrunCount = 0;
+	uint32_t m_lastFifoReportTime = 0;
 
 	// Empty and free unless RAW_SAMPLE_LOGGING is defined.
 	RawSampleLogger<Consts> m_rawLogger;
