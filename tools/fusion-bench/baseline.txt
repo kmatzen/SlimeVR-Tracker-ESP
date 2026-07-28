@@ -1,0 +1,53 @@
+# fusion-bench baseline
+# key  value  tolerance
+#
+# Tolerances should come from measured run-to-run spread, not
+# from taste. See README.md, 'Setting tolerances'.
+static-tuned/heading_drift_deg_per_min            -3.577659     0.178883
+static-tuned/jitter_deg_rms                        0.000927     0.001000
+static-tuned/tilt_error_deg_rms                    0.205732     0.010287
+static-tuned/total_error_deg_rms                   2.073447     0.103672
+static-tuned/heading_error_deg_rms                 2.065570     0.103278
+static-tuned/inclination_error_deg_rms             0.180581     0.009029
+static-tuned/final_heading_error_deg               3.570963     0.178548
+static-stock/heading_drift_deg_per_min            -0.016593     0.001000
+static-stock/jitter_deg_rms                        0.000821     0.001000
+static-stock/tilt_error_deg_rms                    0.175992     0.008800
+static-stock/total_error_deg_rms                   0.157646     0.007882
+static-stock/heading_error_deg_rms                 0.016905     0.001000
+static-stock/inclination_error_deg_rms             0.156737     0.007837
+static-stock/final_heading_error_deg               0.014747     0.001000
+tilted/heading_drift_deg_per_min                  -0.331326     0.016566
+tilted/jitter_deg_rms                              0.001271     0.001000
+tilted/tilt_error_deg_rms                          0.551684     0.027584
+tilted/total_error_deg_rms                         0.586533     0.029327
+tilted/heading_error_deg_rms                       0.106202     0.005310
+tilted/inclination_error_deg_rms                   0.576839     0.028842
+tilted/final_heading_error_deg                     0.183551     0.009178
+yaw-sweep/tilt_error_deg_rms                       0.206365     0.010318
+yaw-sweep/total_error_deg_rms                      0.415678     0.020784
+yaw-sweep/heading_error_deg_rms                    0.399172     0.019959
+yaw-sweep/inclination_error_deg_rms                0.115976     0.005799
+yaw-sweep/final_heading_error_deg                  0.283982     0.014199
+tumble/tilt_error_deg_rms                          0.255994     0.012800
+tumble/total_error_deg_rms                         0.322681     0.016134
+tumble/heading_error_deg_rms                       0.267001     0.013350
+tumble/inclination_error_deg_rms                   0.181201     0.009060
+tumble/final_heading_error_deg                     0.497759     0.024888
+return-to-origin/heading_drift_deg_per_min        -0.695282     0.034764
+return-to-origin/jitter_deg_rms                    0.000223     0.001000
+return-to-origin/tilt_error_deg_rms                0.209326     0.010466
+return-to-origin/total_error_deg_rms               0.204415     0.010221
+return-to-origin/heading_error_deg_rms             0.118959     0.005948
+return-to-origin/inclination_error_deg_rms         0.166235     0.008312
+return-to-origin/final_heading_error_deg           0.265751     0.013288
+scale-error-1pct/tilt_error_deg_rms                0.196566     0.009828
+scale-error-1pct/total_error_deg_rms               0.486210     0.024310
+scale-error-1pct/heading_error_deg_rms             0.475004     0.023750
+scale-error-1pct/inclination_error_deg_rms         0.103783     0.005189
+scale-error-1pct/final_heading_error_deg           0.300395     0.015020
+walk/tilt_error_deg_rms                            5.744743     0.287237
+walk/total_error_deg_rms                           0.760564     0.038028
+walk/heading_error_deg_rms                         0.559765     0.027988
+walk/inclination_error_deg_rms                     0.514904     0.025745
+walk/final_heading_error_deg                       0.902795     0.045140

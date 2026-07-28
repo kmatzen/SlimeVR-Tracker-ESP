@@ -28,6 +28,7 @@
 #include <cstdint>
 
 #include "lsm6ds-common.h"
+#include "lsm6ds-shub.h"
 #include "vqf.h"
 
 namespace SlimeVR::Sensors::SoftFusion::Drivers {
@@ -36,7 +37,9 @@ namespace SlimeVR::Sensors::SoftFusion::Drivers {
 // and gyroscope range at 1000dps
 // Gyroscope ODR = 240Hz, accel ODR = 120Hz
 
-struct LSM6DSV : LSM6DSOutputHandler {
+struct LSM6DSV
+	: LSM6DSOutputHandler
+	, LSM6DSSensorHub<struct LSM6DSV> {
 	static constexpr uint8_t Address = 0x6a;
 	static constexpr auto Name = "LSM6DSV";
 	static constexpr auto Type = SensorTypeID::LSM6DSV;
@@ -108,7 +111,8 @@ struct LSM6DSV : LSM6DSOutputHandler {
 	};
 
 	LSM6DSV(RegisterInterface& registerInterface, SlimeVR::Logging::Logger& logger)
-		: LSM6DSOutputHandler(registerInterface, logger) {}
+		: LSM6DSOutputHandler(registerInterface, logger)
+		, LSM6DSSensorHub<LSM6DSV>(registerInterface, logger) {}
 
 	bool initialize() {
 		// perform initialization step
@@ -132,11 +136,23 @@ struct LSM6DSV : LSM6DSOutputHandler {
 	}
 
 	bool bulkRead(DriverCallbacks<int16_t>&& callbacks) {
+		// The sensor hub only batches into the FIFO once startAuxPolling has
+		// configured it, so before then this is a zeroed config and the
+		// sensor-hub tags are ignored.
+		MagFifoConfig mag;
+		mag.enabled = auxPolling();
+		mag.dummyBytes = auxDummyBytes();
+		mag.dataBytes = auxDataBytes();
+		mag.split = auxSplit();
+		mag.firstDataBytes = auxFirstDataBytes();
+		mag.magTs = MagTs;
+
 		return LSM6DSOutputHandler::template bulkRead<Regs>(
 			std::move(callbacks),
 			GyrTs,
 			AccTs,
-			TempTs
+			TempTs,
+			mag
 		);
 	}
 };

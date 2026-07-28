@@ -32,6 +32,7 @@
 #include "../../sensorinterface/SensorInterface.h"
 #include "../RestCalibrationDetector.h"
 #include "../sensor.h"
+#include "RawSampleLogger.h"
 #include "TempGradientCalculator.h"
 #include "imuconsts.h"
 #include "motionprocessing/types.h"
@@ -107,6 +108,11 @@ class SoftFusionSensor : public Sensor {
 	}};
 
 	void processAccelSample(const RawSensorT xyz[3], const sensor_real_t timeDelta) {
+		// Logged before scaling, so the capture holds what the sensor actually
+		// produced rather than what the current calibration made of it.
+		// Compiled away entirely unless RAW_SAMPLE_LOGGING is defined.
+		m_rawLogger.logAccel(xyz);
+
 		sensor_real_t accelData[]
 			= {static_cast<sensor_real_t>(xyz[0]),
 			   static_cast<sensor_real_t>(xyz[1]),
@@ -120,6 +126,8 @@ class SoftFusionSensor : public Sensor {
 	}
 
 	void processGyroSample(const RawSensorT xyz[3], const sensor_real_t timeDelta) {
+		m_rawLogger.logGyro(xyz);
+
 		sensor_real_t gyroData[]
 			= {static_cast<sensor_real_t>(xyz[0]),
 			   static_cast<sensor_real_t>(xyz[1]),
@@ -128,6 +136,46 @@ class SoftFusionSensor : public Sensor {
 		m_fusion.updateGyro(gyroData, calibrator.getGyroTimestep());
 
 		calibrator.provideGyroSample(xyz);
+	}
+
+	/**
+	 * Feeds a magnetometer sample to the fusion filter.
+	 *
+	 * VQF only needs a consistent field *direction*, so the raw counts are
+	 * scaled by a nominal per-part factor and otherwise passed through. Hard-
+	 * and soft-iron correction is a separate concern and is not applied here;
+	 * VQF's own magnetic-disturbance rejection decides whether to trust the
+	 * reading at all.
+	 */
+	void processMagSample(const int32_t xyz[3], const sensor_real_t timeDelta) {
+		sensor_real_t magData[3];
+
+		if (magDriver.hasTrim()) {
+			// Factory trim available: apply the part's offset, sensitivity and
+			// cross-axis compensation. The cross-axis terms are the ones that
+			// matter most here -- they rotate the measured field vector, and a
+			// rotated vector is a wrong heading, which is an error no amount of
+			// filtering downstream can undo.
+			//
+			// The die temperature is not currently read, so the reference
+			// temperature is passed: the TCO and TCS terms are both defined
+			// relative to it and therefore vanish. That drops the temperature
+			// drift correction, which is second order, and keeps everything
+			// that affects direction.
+			const auto& trim = magDriver.getTrim();
+			float compensated[3];
+			SoftFusion::bmm350Compensate(xyz, trim.dutT0, trim, compensated);
+			magData[0] = static_cast<sensor_real_t>(compensated[0]);
+			magData[1] = static_cast<sensor_real_t>(compensated[1]);
+			magData[2] = static_cast<sensor_real_t>(compensated[2]);
+		} else {
+			const float scale = magDriver.getScale();
+			magData[0] = static_cast<sensor_real_t>(xyz[0]) * scale;
+			magData[1] = static_cast<sensor_real_t>(xyz[1]) * scale;
+			magData[2] = static_cast<sensor_real_t>(xyz[2]) * scale;
+		}
+
+		m_fusion.updateMag(magData, timeDelta);
 	}
 
 	void
@@ -251,6 +299,9 @@ public:
 				[&](int16_t sample, float TempTs) {
 					processTempSample(sample, TempTs);
 				},
+				[&](const int32_t sample[3], float MagTs) {
+					processMagSample(sample, MagTs);
+				},
 			});
 			if (overwhelmed) {
 				calibrator.signalOverwhelmed();
@@ -332,16 +383,23 @@ public:
 		calibrator.checkStartupCalibration();
 
 		if constexpr (Consts::SupportsMags) {
+			// Diagnostic, only on drivers that implement it.
+			if constexpr (requires(SensorType& i) { i.probeAuxPassThrough(); }) {
+				m_sensor.probeAuxPassThrough();
+			}
 			magDriver.init(
 				SoftFusion::MagInterface{
 					.readByte
 					= [&](uint8_t address) { return m_sensor.readAux(address); },
-					.writeByte = [&](uint8_t address, uint8_t value) {},
+					.writeByte = [&](uint8_t address, uint8_t value
+								 ) { m_sensor.writeAux(address, value); },
 					.setDeviceId
 					= [&](uint8_t deviceId) { m_sensor.setAuxId(deviceId); },
 					.startPolling
-					= [&](uint8_t dataReg, SoftFusion::MagDataWidth dataWidth
-					  ) { m_sensor.startAuxPolling(dataReg, dataWidth); },
+					= [&](uint8_t dataReg,
+						  SoftFusion::MagDataWidth dataWidth,
+						  uint8_t dummyBytes
+					  ) { m_sensor.startAuxPolling(dataReg, dataWidth, dummyBytes); },
 					.stopPolling = [&]() { m_sensor.stopAuxPolling(); },
 				},
 				Consts::Supports9ByteMag
@@ -351,6 +409,19 @@ public:
 				magDriver.startPolling();
 			}
 		}
+
+		// Started last, after every other subsystem has finished logging. The
+		// raw stream is dense enough to bury anything printed after it, and the
+		// magnetometer detection lines are exactly what a bring-up needs to
+		// read.
+		m_rawLogger.begin(
+			sensorId,
+			SensorType::Name,
+			calibrator.getAccelTimestep(),
+			calibrator.getGyroTimestep(),
+			Consts::AScale,
+			Consts::GScale
+		);
 
 		toggles.onToggleChange([&](SensorToggles toggle, bool value) {
 			if (toggle == SensorToggles::MagEnabled) {
@@ -387,6 +458,9 @@ public:
 	RestCalibrationDetector calibrationDetector;
 
 	SoftFusion::MagDriver magDriver;
+
+	// Empty and free unless RAW_SAMPLE_LOGGING is defined.
+	RawSampleLogger<Consts> m_rawLogger;
 
 	static bool checkPresent(const RegisterInterface& imuInterface) {
 		I2Cdev::readTimeout = 100;

@@ -427,7 +427,7 @@ struct ICM45Base {
 		}
 	}
 
-	void startAuxPolling(uint8_t dataReg, MagDataWidth dataWidth) {
+	void startAuxPolling(uint8_t dataReg, MagDataWidth dataWidth, uint8_t dummyBytes) {
 		// TODO:
 	}
 

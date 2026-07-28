@@ -31,4 +31,10 @@ struct DriverCallbacks {
 	std::function<void(const SampleType sample[3], float AccTs)> processAccelSample;
 	std::function<void(const SampleType sample[3], float GyrTs)> processGyroSample;
 	std::function<void(int16_t sample, float TempTs)> processTempSample;
+	// Magnetometer samples are int32 rather than SampleType: an aux mag is a
+	// separate part from the IMU and need not share its sample width. The
+	// BMM350, for instance, is 24-bit per axis, which does not fit an int16.
+	//
+	// May be empty -- drivers without an aux interface never call it.
+	std::function<void(const int32_t sample[3], float MagTs)> processMagSample;
 };
