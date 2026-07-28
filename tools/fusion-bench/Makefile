@@ -31,7 +31,8 @@ TEST_SRC  := tests/selftest.cpp src/dataset.cpp src/metrics.cpp src/synth.cpp \
 # which it did, until a deliberate mutation failed to fail.
 HEADERS   := $(wildcard src/*.h) $(VQF_DIR)/vqf.h \
              $(wildcard $(ROOT)/src/sensors/softfusion/drivers/magfifo.h) \
-             $(wildcard $(ROOT)/src/sensors/softfusion/drivers/bmm350comp.h)
+             $(wildcard $(ROOT)/src/sensors/softfusion/drivers/bmm350comp.h) \
+             $(wildcard $(ROOT)/src/sensors/softfusion/errormodel.h)
 
 SOURCES := src/main.cpp src/dataset.cpp src/metrics.cpp src/synth.cpp \
            src/dataset.h src/metrics.h src/quatmath.h src/synth.h \
