@@ -242,7 +242,67 @@ inline bool spansThreeDimensions(
 	return smallestEigenvalue3(cov) >= minSpread;
 }
 
+/**
+ * True if every axis was measured pointing both up and down.
+ *
+ * This exists because direction spread, which is what the quadric fit checks,
+ * cannot see the failure it guards. Take the six-position procedure and drop
+ * one position -- say -Z, keeping +Z twice. The direction covariance is
+ * unchanged at a perfect 1/3 on every axis, so the spread check is entirely
+ * happy. The diagonal fit is nonetheless singular: its Z unknowns appear only
+ * as `a3 z^2 - 2 c3 z`, the in-plane rows have `z = 0` and contribute nothing
+ * to either, and the surviving `+Z` rows are all identical -- one equation for
+ * two unknowns.
+ *
+ * Whether that is caught by the linear solve is a matter of floating-point
+ * luck, and it duly differed between compilers: clang admitted the set and
+ * returned a confidently wrong Z scale, gcc refused it. Either behaviour is
+ * unacceptable for something applied to every subsequent sample, so the
+ * condition is tested directly rather than left to a pivot threshold.
+ *
+ * Slightly stricter than the algebra strictly requires -- two distinct
+ * same-sign magnitudes would also separate the unknowns, just badly -- and
+ * deliberately so, because "each axis up and each axis down" is exactly the
+ * procedure being asked of the user.
+ *
+ * @param minComponent  How large a coordinate must be to count as pointing
+ *                      along that axis rather than lying across it.
+ */
+inline bool
+eachAxisSeenBothWays(const float* samples, size_t count, float minComponent) {
+	bool positive[3] = {false, false, false};
+	bool negative[3] = {false, false, false};
+	for (size_t i = 0; i < count; i++) {
+		for (int axis = 0; axis < 3; axis++) {
+			const float v = samples[i * 3 + axis];
+			if (v > minComponent) {
+				positive[axis] = true;
+			} else if (v < -minComponent) {
+				negative[axis] = true;
+			}
+		}
+	}
+	for (int axis = 0; axis < 3; axis++) {
+		if (!positive[axis] || !negative[axis]) {
+			return false;
+		}
+	}
+	return true;
+}
+
 }  // namespace detail
+
+/**
+ * Fraction of the expected magnitude a coordinate must reach to count as
+ * measuring that axis.
+ *
+ * 0.2 -- about 11.5 degrees above horizontal. Far below what the six-position
+ * procedure produces (a hold within 20 degrees of vertical puts 0.94 on the
+ * axis) and far above the rounding noise of a coordinate that is nominally
+ * zero, so it separates "pointed along this axis" from "lay across it" without
+ * being a second alignment tolerance.
+ */
+constexpr float kMinAxisComponent = 0.2f;
 
 /**
  * Minimum directional spread required before a fit is accepted.
@@ -418,6 +478,9 @@ fitErrorModelDiagonal(const float* samples, size_t count, float norm, ErrorModel
 		return false;
 	}
 	if (!detail::spansThreeDimensions(samples, count, 6, kMinDirectionSpread)) {
+		return false;
+	}
+	if (!detail::eachAxisSeenBothWays(samples, count, kMinAxisComponent * norm)) {
 		return false;
 	}
 

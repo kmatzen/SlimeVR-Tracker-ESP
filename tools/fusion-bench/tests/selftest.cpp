@@ -1685,8 +1685,16 @@ void testDiagonalFitIsUnityForAPerfectSensor() {
 }
 
 void testDiagonalFitRejectsPoorCoverage() {
-	// Five positions plus a repeat is not six orientations. The spread check
-	// has to notice, because the solve alone would not.
+	// Five positions plus a repeat is not six orientations, and this is the
+	// case direction spread cannot see. Dropping -Z while keeping +Z twice
+	// leaves the direction covariance at a perfect 1/3 on every axis, so the
+	// spread check is entirely happy -- yet the fit's Z unknowns appear only as
+	// `a3 z^2 - 2 c3 z`, the in-plane rows contribute nothing to either, and
+	// the surviving +Z rows are identical. One equation, two unknowns.
+	//
+	// Left to the linear solve this came out differently on different
+	// compilers: clang admitted it and returned a confidently wrong Z scale,
+	// gcc refused it. Hence a direct check rather than a pivot threshold.
 	const int positions[6] = {0, 1, 2, 3, 4, 4};
 	std::vector<float> samples;
 	for (int rep = 0; rep < 4; rep++) {
@@ -1699,9 +1707,16 @@ void testDiagonalFitRejectsPoorCoverage() {
 		}
 	}
 	ErrorModel m;
-	// Five distinct axes still span three dimensions, so this one is admitted
-	// -- the missing -Z is recoverable from the +Z data plus the constraint.
-	TRUE_(fitErrorModelDiagonal(samples.data(), 24, static_cast<float>(kG), m));
+	TRUE_(!fitErrorModelDiagonal(samples.data(), 24, static_cast<float>(kG), m));
+
+	// The spread check really is blind to it, which is why the second guard
+	// has to exist. Asserting this keeps the two from being confused for one.
+	TRUE_(SlimeVR::Sensors::SoftFusion::detail::spansThreeDimensions(
+		samples.data(),
+		24,
+		6,
+		SlimeVR::Sensors::SoftFusion::kMinDirectionSpread
+	));
 
 	// A set confined to one plane is not.
 	std::vector<float> planar;
