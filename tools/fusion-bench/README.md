@@ -445,6 +445,59 @@ is worth much more than a confidently wrong one.
 session covering orientations off the axes and fit it on the host — that path
 observes the cross terms this one cannot.
 
+### The tracker also calibrates itself, quietly
+
+Since the six-position procedure only exists to put the sensor in varied
+orientations, and ordinary use eventually does that anyway, the tracker runs the
+same fit continuously in the background. Every still moment is a constraint —
+a stationary accelerometer measures gravity, and gravity has a known magnitude.
+
+```
+GET ACCELCAL
+```
+
+```
+Sensor[0] online accel estimate: 41.3 observations, spread 0.291, all axes both ways: yes
+  online: bias 0.1187 -0.0793 0.0521  scale 1.0298 0.9701 1.0102
+  stored: bias 0.1187 -0.0793 0.0521  scale 1.0298 0.9701 1.0102 (from this estimator)
+```
+
+**It only applies itself where nothing better exists.** A model from `CALIBRATE
+ACCEL` or `SET GYROSCALE` is something you chose; the estimator defers to it
+permanently and says so. It will, however, keep refreshing *its own* previous
+answer — that is the point of being online, since bias moves with temperature
+while scale does not.
+
+**What makes it fit on a microcontroller** is that the batch fit's normal
+equations are a sum over samples, so there is no history to keep. The whole
+estimator is 368 bytes and constant — for comparison the guided collector needs
+288 bytes just to hold its 24 samples. It is not a port of the offline
+estimator (which re-integrates the capture per candidate); it is the same
+algorithm with the loop turned inside out.
+
+**Three gates decide what counts as an observation**, and the first is the one
+that makes the whole thing work:
+
+- **Novelty.** A tracker left on a desk overnight is at rest for seven million
+  samples in *one* orientation. Counted, they would swamp every other direction
+  ever seen — and everything would look healthy while it happened, because the
+  count would be enormous and the system beautifully conditioned about a single
+  point. Coverage is the only thing that would be wrong, and coverage is exactly
+  what a count cannot measure. So an observation is only taken somewhere the
+  tracker has not already been, and a long rest is worth one.
+- **Magnitude**, because rest detection reports "not moving", which is not the
+  same as "measuring gravity".
+- **Forgetting**, so the bias estimate reflects current conditions rather than
+  an average over a day of them.
+
+**It does not converge from wear alone, and that is not a tuning problem.** A
+shin tracker sees gravity inside a narrow cone however far its wearer walks, so
+the axis whose scale and bias are confounded stays confounded — separating them
+needs that axis measured pointing both up and down. What completes the picture
+is the tracker being taken off, set down and stored on different faces, which
+happens daily but is not walking. Until then it reports what it has and refuses
+to solve. If you want a calibration now, run `CALIBRATE ACCEL`.
+
 **One board does not have it.** `BOARD_GLOVE_IMU_SLIMEVR_DEV` builds every IMU
 driver into a 1280 kB partition and was already 99.8% full before this existed —
 2672 bytes spare, against roughly 17 kB for the flow. About 5 kB of that is the
@@ -452,7 +505,9 @@ soft-float `double` library, which this is the first code on that board to need;
 the rest is the collector and the fit. No amount of trimming closes a gap that
 size, so it is compiled out there (`-D DISABLE_GUIDED_ACCEL_CALIBRATION`) rather
 than shrunk into something that no longer works. `CALIBRATE ACCEL` says so
-rather than failing silently. Every other board has it.
+rather than failing silently. Every other board has it, and the same flag
+governs the online estimator above — a board that cannot afford the procedure
+certainly cannot afford an estimator that runs all the time.
 
 ### Test D — temperature ramp
 

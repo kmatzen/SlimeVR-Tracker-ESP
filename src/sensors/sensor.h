@@ -38,6 +38,7 @@
 #include "sensorinterface/RegisterInterface.h"
 #include "sensorinterface/SensorInterface.h"
 #include "sensorinterface/i2cimpl.h"
+#include "sensors/softfusion/calibrationfeatures.h"
 #include "status/TPSCounter.h"
 #include "utils.h"
 
@@ -83,6 +84,15 @@ public:
 	// Only meaningful for a calibration that waits on the user -- the
 	// background ones have nothing to abandon.
 	virtual void cancelCalibration(){};
+#if ONLINE_ACCEL_ESTIMATION
+	// Reports what continuous background estimation currently believes.
+	//
+	// Guarded rather than left as an empty default: a virtual costs a vtable
+	// slot in every Sensor subclass and a forwarder in every IMU driver, and
+	// the board this feature is compiled out on is the one with 1770 bytes
+	// left. A disabled feature should cost nothing.
+	virtual void printOnlineEstimate(){};
+#endif
 	virtual SensorStatus getSensorState();
 	virtual void printTemperatureCalibrationState();
 	virtual void printDebugTemperatureCalibrationState();

@@ -31,7 +31,7 @@
 #include "calibration.h"
 #include "configuration/gyroscalecmd.h"
 #include "logging/Logger.h"
-#include "sensors/softfusion/sixposition.h"
+#include "sensors/softfusion/calibrationfeatures.h"
 #include "utils.h"
 
 #ifdef ESP32
@@ -184,6 +184,9 @@ void cmdSetGyroScale(CmdParser* parser) {
 	const bool discarded
 		= buildGyroScaleModel(scale, cal.errorModelValid, cal.A_M, cal.G_M);
 	cal.errorModelValid = true;
+	// A typed-in scale is a deliberate act; the online estimator must not
+	// quietly undo it on the next observation.
+	cal.errorModelFromOnline = false;
 
 	configuration.setSensor(static_cast<size_t>(sensorId), config);
 	configuration.save();
@@ -396,6 +399,17 @@ void cmdGet(CmdParser* parser) {
 	if (parser->equalCmdParam(1, "GYROSCALE")) {
 		cmdGetGyroScale();
 	}
+
+#if ONLINE_ACCEL_ESTIMATION
+	if (parser->equalCmdParam(1, "ACCELCAL")) {
+		// What the tracker has worked out for itself from ordinary use, as
+		// opposed to what CALIBRATE ACCEL would produce from a deliberate
+		// procedure.
+		for (auto& sensor : sensorManager.getSensors()) {
+			sensor->printOnlineEstimate();
+		}
+	}
+#endif
 
 	if (parser->equalCmdParam(1, "INFO")) {
 		printState();

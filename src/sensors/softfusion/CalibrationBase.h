@@ -27,6 +27,7 @@
 #include <cstdint>
 #include <functional>
 
+#include "calibrationfeatures.h"
 #include "configuration/SensorConfig.h"
 #include "imuconsts.h"
 #include "motionprocessing/types.h"
@@ -66,6 +67,9 @@ public:
 	virtual void checkStartupCalibration() {}
 	virtual void startCalibration(int calibrationType){};
 	virtual void cancelCalibration(){};
+#if ONLINE_ACCEL_ESTIMATION
+	virtual void printOnlineEstimate(){};
+#endif
 
 	virtual bool calibrationMatches(
 		const SlimeVR::Configuration::SensorConfig& sensorCalibration

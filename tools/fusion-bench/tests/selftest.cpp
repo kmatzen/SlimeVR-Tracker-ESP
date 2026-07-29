@@ -24,6 +24,7 @@
 #include "../../../src/sensors/softfusion/drivers/bmm350comp.h"
 #include "../../../src/sensors/softfusion/drivers/magfifo.h"
 #include "../../../src/sensors/softfusion/errormodel.h"
+#include "../../../src/sensors/softfusion/onlineestimator.h"
 #include "../../../src/sensors/softfusion/sixposition.h"
 
 using namespace fb;
@@ -2140,6 +2141,516 @@ void testAccelModelStoreIsActuallyApplied() {
 	TRUE_(worst < 1e-3);
 }
 
+// ---------------------------------------------------------------------------
+// Online (recursive) error-model estimation.
+// ---------------------------------------------------------------------------
+
+using SlimeVR::Sensors::SoftFusion::DiagonalNormalEquations;
+using SlimeVR::Sensors::SoftFusion::kOnlineBlockSamples;
+using SlimeVR::Sensors::SoftFusion::kOnlineMinObservations;
+using SlimeVR::Sensors::SoftFusion::OnlineErrorEstimator;
+
+/// Feeds one whole block pointing along `dir`, through a corrupted sensor.
+static OnlineErrorEstimator::Result feedBlock(
+	OnlineErrorEstimator& est,
+	const double dir[3],
+	const double gain[3],
+	const double bias[3],
+	bool atRest = true,
+	double noise = 0.0,
+	Rng* rng = nullptr
+) {
+	const double n = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+	const double t[3] = {dir[0] / n * kG, dir[1] / n * kG, dir[2] / n * kG};
+	float raw[3];
+	corrupt(t, gain, 0.0, bias, raw);
+
+	auto result = OnlineErrorEstimator::Result::Accumulating;
+	for (size_t i = 0; i < kOnlineBlockSamples; i++) {
+		float s[3] = {raw[0], raw[1], raw[2]};
+		if (noise > 0.0 && rng != nullptr) {
+			for (float& v : s) {
+				v += static_cast<float>(noise * rng->normal());
+			}
+		}
+		result = est.feed(s, atRest, static_cast<float>(kG));
+	}
+	return result;
+}
+
+/// The six axis directions, which are what ordinary handling eventually covers.
+static const double kAxisDirs[6][3]
+	= {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
+
+void testStreamingNormalEquationsMatchBatch() {
+	// The refactor's whole claim: accumulating one sample at a time is the same
+	// computation as the batch fit, not merely a similar one. If this drifts,
+	// the online estimator and the guided flow would silently disagree about
+	// the same sensor.
+	const double gain[3] = {1.03, 0.97, 1.01};
+	const double bias[3] = {0.12, -0.08, 0.05};
+
+	std::vector<float> samples;
+	for (int rep = 0; rep < 4; rep++) {
+		for (int p = 0; p < 6; p++) {
+			float raw[3];
+			rawForPosition(p, gain, 0.0, bias, raw);
+			samples.push_back(raw[0]);
+			samples.push_back(raw[1]);
+			samples.push_back(raw[2]);
+		}
+	}
+
+	ErrorModel batch;
+	TRUE_(fitErrorModelDiagonal(samples.data(), 24, static_cast<float>(kG), batch));
+
+	DiagonalNormalEquations streamed;
+	for (int i = 0; i < 24; i++) {
+		streamed.add(&samples[i * 3]);
+	}
+	ErrorModel online;
+	TRUE_(streamed.solve(static_cast<float>(kG), online));
+
+	for (int i = 0; i < 9; i++) {
+		NEAR(online.m[i], batch.m[i], 1e-9);
+	}
+	for (int i = 0; i < 3; i++) {
+		NEAR(online.bias[i], batch.bias[i], 1e-9);
+	}
+}
+
+void testOnlineRecoversBiasAndScale() {
+	// The headline: no procedure, no stored samples -- just a tracker that has
+	// been left in a variety of positions -- and the error it was built with
+	// comes back out.
+	const double gain[3] = {1.03, 0.97, 1.01};
+	const double bias[3] = {0.12, -0.08, 0.05};
+
+	OnlineErrorEstimator est;
+	TRUE_(!est.isReady());
+
+	for (int rep = 0; rep < 4; rep++) {
+		for (const auto& d : kAxisDirs) {
+			feedBlock(est, d, gain, bias);
+		}
+	}
+
+	TRUE_(est.isReady());
+	ErrorModel m;
+	TRUE_(est.solve(static_cast<float>(kG), m));
+	NEAR(m.bias[0], bias[0], 5e-3);
+	NEAR(m.bias[1], bias[1], 5e-3);
+	NEAR(m.bias[2], bias[2], 5e-3);
+	NEAR(m.m[0], gain[0], 5e-3);
+	NEAR(m.m[4], gain[1], 5e-3);
+	NEAR(m.m[8], gain[2], 5e-3);
+
+	// And it is a model the plausibility check would accept.
+	TRUE_(
+		SlimeVR::Configuration::checkAccelModel(m, static_cast<float>(kG))
+		== SlimeVR::Configuration::AccelModelStatus::Ok
+	);
+}
+
+void testOnlineIgnoresATrackerThatNeverMoves() {
+	// The failure this estimator exists to avoid. A tracker left on a desk
+	// overnight is at rest for millions of samples in one orientation. Counting
+	// them would give an enormous, beautifully conditioned, completely useless
+	// system -- and every health signal except coverage would look excellent.
+	const double gain[3] = {1.0, 1.0, 1.0};
+	const double bias[3] = {0, 0, 0};
+	const double flat[3] = {0, 0, 1};
+
+	OnlineErrorEstimator est;
+	int observed = 0;
+	int rejected = 0;
+	for (int block = 0; block < 2000; block++) {
+		const auto r = feedBlock(est, flat, gain, bias);
+		if (r == OnlineErrorEstimator::Result::Observed) {
+			observed++;
+		} else if (r == OnlineErrorEstimator::Result::NotNovel) {
+			rejected++;
+		}
+	}
+
+	// Exactly one observation from 64000 rest samples in one place.
+	TRUE_(observed == 1);
+	TRUE_(rejected == 1999);
+	TRUE_(!est.isReady());
+	NEAR(est.observations(), 1.0, 1e-9);
+}
+
+void testOnlineNoveltyGateAcceptsRealMovement() {
+	// The gate must not be so strict that ordinary handling stops registering.
+	// 20 degrees apart is a different position by any reasonable reading.
+	const double gain[3] = {1.0, 1.0, 1.0};
+	const double bias[3] = {0, 0, 0};
+
+	OnlineErrorEstimator est;
+	int observed = 0;
+	for (int i = 0; i < 8; i++) {
+		const double angle = deg2rad(20.0 * i);
+		const double d[3] = {std::sin(angle), 0, std::cos(angle)};
+		if (feedBlock(est, d, gain, bias) == OnlineErrorEstimator::Result::Observed) {
+			observed++;
+		}
+	}
+	TRUE_(observed == 8);
+
+	// But 5 degrees apart is the same position with a hand resting on it.
+	OnlineErrorEstimator tiny;
+	int tinyObserved = 0;
+	for (int i = 0; i < 8; i++) {
+		const double angle = deg2rad(5.0 * i);
+		const double d[3] = {std::sin(angle), 0, std::cos(angle)};
+		if (feedBlock(tiny, d, gain, bias) == OnlineErrorEstimator::Result::Observed) {
+			tinyObserved++;
+		}
+	}
+	TRUE_(tinyObserved < 4);
+}
+
+void testOnlineRequiresRest() {
+	// Motion is not gravity. Without the rest gate the estimator would fit the
+	// wrong vector entirely.
+	const double gain[3] = {1.0, 1.0, 1.0};
+	const double bias[3] = {0, 0, 0};
+
+	OnlineErrorEstimator est;
+	for (int rep = 0; rep < 8; rep++) {
+		for (const auto& d : kAxisDirs) {
+			feedBlock(est, d, gain, bias, /*atRest=*/false);
+		}
+	}
+	NEAR(est.observations(), 0.0, 1e-12);
+	TRUE_(!est.isReady());
+
+	// A block interrupted partway through is discarded rather than completed
+	// with whatever arrives next.
+	OnlineErrorEstimator interrupted;
+	const float flat[3] = {0, 0, static_cast<float>(kG)};
+	for (size_t i = 0; i < kOnlineBlockSamples - 1; i++) {
+		interrupted.feed(flat, true, static_cast<float>(kG));
+	}
+	interrupted.feed(flat, false, static_cast<float>(kG));
+	for (size_t i = 0; i < kOnlineBlockSamples - 1; i++) {
+		interrupted.feed(flat, true, static_cast<float>(kG));
+	}
+	NEAR(interrupted.observations(), 0.0, 1e-12);
+}
+
+void testOnlineRejectsSteadyNonGravity() {
+	// Rest detection says "not moving", which is not the same as "measuring
+	// gravity". A sensor mid-range-change reads steady and wrong.
+	const double gain[3] = {1.0, 1.0, 1.0};
+	const double bias[3] = {0, 0, 0};
+
+	OnlineErrorEstimator est;
+	for (int rep = 0; rep < 4; rep++) {
+		for (const auto& d : kAxisDirs) {
+			// Half-magnitude: steady, at rest, and not gravity.
+			const double half[3] = {d[0] * 0.5, d[1] * 0.5, d[2] * 0.5};
+			const double n
+				= std::sqrt(half[0] * half[0] + half[1] * half[1] + half[2] * half[2]);
+			float raw[3] = {
+				static_cast<float>(half[0] / n * kG * 0.5),
+				static_cast<float>(half[1] / n * kG * 0.5),
+				static_cast<float>(half[2] / n * kG * 0.5),
+			};
+			for (size_t i = 0; i < kOnlineBlockSamples; i++) {
+				est.feed(raw, true, static_cast<float>(kG));
+			}
+		}
+	}
+	NEAR(est.observations(), 0.0, 1e-12);
+}
+
+void testOnlineFollowsDriftingBias() {
+	// Why forgetting exists. Bias moves with temperature; scale does not. An
+	// estimator that weights a reading from hours ago equally with one from now
+	// reports an average over conditions that have passed.
+	const double gain[3] = {1.0, 1.0, 1.0};
+	const double early[3] = {0.20, 0.0, 0.0};
+	const double late[3] = {-0.20, 0.0, 0.0};
+
+	OnlineErrorEstimator est;
+	for (int rep = 0; rep < 8; rep++) {
+		for (const auto& d : kAxisDirs) {
+			feedBlock(est, d, gain, early);
+		}
+	}
+	ErrorModel m;
+	TRUE_(est.solve(static_cast<float>(kG), m));
+	NEAR(m.bias[0], early[0], 5e-3);
+
+	// The bias moves. After enough new observations the estimate follows it
+	// rather than splitting the difference.
+	for (int rep = 0; rep < 40; rep++) {
+		for (const auto& d : kAxisDirs) {
+			feedBlock(est, d, gain, late);
+		}
+	}
+	TRUE_(est.solve(static_cast<float>(kG), m));
+	NEAR(m.bias[0], late[0], 1e-2);
+}
+
+void testOnlineDoesNotConvergeFromWearAlone() {
+	// The limitation worth knowing before anyone relies on this, and the reason
+	// it supplements the guided flow rather than replacing it.
+	//
+	// A tracker strapped to a shin sees a narrow band of orientations: gravity
+	// stays within a cone about one sensor axis however much the wearer walks.
+	// That band never points -Z at the sky, so the axis whose scale and bias are
+	// confounded stays confounded, and no amount of walking separates them.
+	//
+	// The estimator must refuse rather than return the confident answer a
+	// well-conditioned-looking system would otherwise produce.
+	const double gain[3] = {1.03, 0.97, 1.01};
+	const double bias[3] = {0.12, -0.08, 0.05};
+
+	OnlineErrorEstimator worn;
+	Rng rng(11);
+	for (int i = 0; i < 400; i++) {
+		// Gravity within a 40 degree cone about +Z: a leg swinging.
+		const double tilt = deg2rad(40.0) * rng.uniform();
+		const double az = 2.0 * kPi * rng.uniform();
+		const double d[3]
+			= {std::sin(tilt) * std::cos(az),
+			   std::sin(tilt) * std::sin(az),
+			   std::cos(tilt)};
+		feedBlock(worn, d, gain, bias);
+	}
+
+	// Plenty of observations, and they are genuinely spread in two dimensions.
+	TRUE_(worn.observations() > kOnlineMinObservations);
+	// But not in three, and never both ways along any axis.
+	TRUE_(!worn.eachAxisBothWays());
+	TRUE_(!worn.isReady());
+	ErrorModel refused;
+	TRUE_(!worn.solve(static_cast<float>(kG), refused));
+
+	// Now the tracker comes off and spends the night on a shelf, on each of its
+	// faces in turn -- which is what actually completes the picture. This is the
+	// other half of the test: without it, the first half would only show an
+	// estimator that never converges at all.
+	for (int rep = 0; rep < 3; rep++) {
+		for (const auto& d : kAxisDirs) {
+			feedBlock(worn, d, gain, bias);
+		}
+	}
+	TRUE_(worn.eachAxisBothWays());
+	TRUE_(worn.isReady());
+
+	ErrorModel m;
+	TRUE_(worn.solve(static_cast<float>(kG), m));
+	NEAR(m.bias[0], bias[0], 2e-2);
+	NEAR(m.m[8], gain[2], 2e-2);
+}
+
+void testOnlineReadinessConditionsAreIndependent() {
+	// `isReady` asks three questions, and it is easy to write a test suite in
+	// which any one of them could be deleted without a failure -- because the
+	// natural sample sets satisfy all three or none. Each half below is
+	// constructed so exactly one condition fails.
+	const double gain[3] = {1.0, 1.0, 1.0};
+	const double bias[3] = {0, 0, 0};
+
+	// Count alone. Six axis directions are perfect coverage by both other
+	// measures, and still too few observations to act on.
+	OnlineErrorEstimator sparse;
+	for (const auto& d : kAxisDirs) {
+		feedBlock(sparse, d, gain, bias);
+	}
+	TRUE_(sparse.eachAxisBothWays());
+	TRUE_(
+		sparse.directionSpread() >= SlimeVR::Sensors::SoftFusion::kMinDirectionSpread
+	);
+	TRUE_(sparse.observations() < kOnlineMinObservations);
+	TRUE_(!sparse.isReady());
+
+	// Spread alone. A tracker rocked back and forth through a shallow angle
+	// sees every axis both ways -- |z| reaches 0.22, past the 0.2 that counts as
+	// seeing an axis -- while barely leaving the xy plane. Both-ways is
+	// satisfied and the directions still do not span three dimensions.
+	OnlineErrorEstimator shallow;
+	constexpr double lift = 0.22;
+	const double ring = std::sqrt(1.0 - lift * lift);
+	for (int i = 0; i < 24; i++) {
+		const double th = deg2rad(30.0 * i);
+		const double z = (i % 2 == 0) ? lift : -lift;
+		const double d[3] = {ring * std::cos(th), ring * std::sin(th), z};
+		feedBlock(shallow, d, gain, bias);
+	}
+	TRUE_(shallow.observations() >= kOnlineMinObservations);
+	TRUE_(shallow.eachAxisBothWays());
+	TRUE_(
+		shallow.directionSpread() < SlimeVR::Sensors::SoftFusion::kMinDirectionSpread
+	);
+	TRUE_(!shallow.isReady());
+}
+
+void testOnlineStateIsBounded() {
+	// The property that makes this viable on a microcontroller: the estimator
+	// costs the same after a million samples as after one. If this ever grows a
+	// buffer, it stops being usable on the boards that need it most -- and
+	// those are precisely the multi-IMU boards where it would be worth the
+	// most, so the ceiling is worth pinning rather than trusting.
+	//
+	// 368 bytes as written, 224 of which is the normal equations themselves.
+	// For scale, the guided collector's sample buffer alone is 288 bytes and it
+	// holds only 24 observations; this holds an unbounded history in less.
+	TRUE_(sizeof(OnlineErrorEstimator) <= 512);
+
+	// And it stays numerically sane over a long run rather than saturating.
+	const double gain[3] = {1.02, 0.99, 1.0};
+	const double bias[3] = {0.05, 0.05, -0.05};
+	OnlineErrorEstimator est;
+	for (int rep = 0; rep < 2000; rep++) {
+		for (const auto& d : kAxisDirs) {
+			feedBlock(est, d, gain, bias);
+		}
+	}
+	ErrorModel m;
+	TRUE_(est.solve(static_cast<float>(kG), m));
+	NEAR(m.m[0], gain[0], 5e-3);
+	NEAR(m.bias[2], bias[2], 5e-3);
+	// Forgetting keeps the effective count near its window rather than letting
+	// it run to 12000, which is what would eventually destroy the precision.
+	TRUE_(est.observations() < 100.0);
+}
+
+void testOnlineSurvivesNoise() {
+	// Realistic block-mean noise must not push the estimate outside what the
+	// plausibility check accepts, or the feature would spend its life refusing
+	// its own output.
+	const double gain[3] = {1.03, 0.97, 1.01};
+	const double bias[3] = {0.12, -0.08, 0.05};
+	Rng rng(5);
+
+	OnlineErrorEstimator est;
+	for (int rep = 0; rep < 20; rep++) {
+		for (const auto& d : kAxisDirs) {
+			feedBlock(est, d, gain, bias, true, 0.02, &rng);
+		}
+	}
+	ErrorModel m;
+	TRUE_(est.solve(static_cast<float>(kG), m));
+	TRUE_(
+		SlimeVR::Configuration::checkAccelModel(m, static_cast<float>(kG))
+		== SlimeVR::Configuration::AccelModelStatus::Ok
+	);
+	NEAR(m.m[0], gain[0], 1e-2);
+	NEAR(m.bias[1], bias[1], 2e-2);
+}
+
+void testOnlineEstimatePrecedence() {
+	using namespace SlimeVR::Configuration;
+
+	// A tracker nobody has calibrated: the estimator fills the vacuum.
+	TRUE_(onlineEstimateMayApply(/*valid=*/false, /*fromOnline=*/false));
+
+	// Its own previous answer: free to refresh, which is the whole point of
+	// being online. Without this the estimator would apply once and then be
+	// locked out by the very flag it had just set.
+	TRUE_(onlineEstimateMayApply(true, true));
+
+	// A deliberate calibration always wins. CALIBRATE ACCEL and SET GYROSCALE
+	// are things a user chose to do, and an estimator quietly undoing them
+	// would look exactly like the tracker drifting back to where it was.
+	TRUE_(!onlineEstimateMayApply(true, false));
+
+	// A config written before this flag existed reads it as false, because the
+	// loader zero-initialises before reading a short file. That maps to
+	// "deliberate", so an upgraded tracker's existing calibration is never
+	// overwritten by an estimate -- the conservative direction to be wrong in.
+	// The zero-fill itself is Configuration::loadSensors' guarantee.
+	TRUE_(!onlineEstimateMayApply(true, /*fromOnline=*/false));
+}
+
+void testOnlinePersistenceIsRateLimited() {
+	using namespace SlimeVR::Configuration;
+
+	// A flash-wear guard, not a numerical nicety. The estimate moves slightly
+	// with every observation; persisting each one would mean LittleFS writes
+	// several times a day for the life of the tracker, recording differences
+	// far below anything tracking can resolve.
+	const float storedM[9] = {1.02f, 0, 0, 0, 0.98f, 0, 0, 0, 1.0f};
+	const float storedBias[3] = {0.10f, -0.05f, 0.02f};
+
+	ErrorModel same;
+	same.m[0] = 1.02f;
+	same.m[4] = 0.98f;
+	same.m[8] = 1.0f;
+	same.bias[0] = 0.10f;
+	same.bias[1] = -0.05f;
+	same.bias[2] = 0.02f;
+	TRUE_(!accelModelDiffersMaterially(same, storedM, storedBias));
+
+	// Drift far below what tracking can see does not earn a write.
+	ErrorModel noise = same;
+	noise.bias[0] = 0.1005f;
+	noise.m[4] = 0.9805f;
+	TRUE_(!accelModelDiffersMaterially(noise, storedM, storedBias));
+
+	// A real change does.
+	ErrorModel moved = same;
+	moved.bias[1] = -0.09f;
+	TRUE_(accelModelDiffersMaterially(moved, storedM, storedBias));
+
+	ErrorModel rescaled = same;
+	rescaled.m[8] = 1.01f;
+	TRUE_(accelModelDiffersMaterially(rescaled, storedM, storedBias));
+}
+
+void testOnlineApplyPathProducesAUsableModel() {
+	using namespace SlimeVR::Configuration;
+
+	// End to end through the shape the firmware uses: estimate from ordinary
+	// still moments, check plausibility, store, and confirm the stored model
+	// actually corrects the sensor it was estimated from.
+	const double gain[3] = {1.03, 0.97, 1.01};
+	const double bias[3] = {0.12, -0.08, 0.05};
+
+	OnlineErrorEstimator est;
+	for (int rep = 0; rep < 4; rep++) {
+		for (const auto& d : kAxisDirs) {
+			feedBlock(est, d, gain, bias);
+		}
+	}
+	ErrorModel model;
+	TRUE_(est.solve(static_cast<float>(kG), model));
+	TRUE_(checkAccelModel(model, static_cast<float>(kG)) == AccelModelStatus::Ok);
+
+	float aM[9] = {0};
+	float gM[9] = {0};
+	float aOff[3] = {0, 0, 0};
+	bool accelCalibrated[3] = {false, false, false};
+	storeAccelModel(model, false, aM, gM, aOff, accelCalibrated);
+
+	// The gyro matrix hazard applies on this path too: an online estimate sets
+	// errorModelValid, and a never-fitted G_M would go live as a zero matrix.
+	const bool gyroIsIdentity = gM[0] == 1.0f && gM[4] == 1.0f && gM[8] == 1.0f;
+	TRUE_(gyroIsIdentity);
+
+	double worst = 0;
+	for (const auto& d : kAxisDirs) {
+		const double t[3] = {d[0] * kG, d[1] * kG, d[2] * kG};
+		float raw[3];
+		corrupt(t, gain, 0.0, bias, raw);
+		const float dv[3] = {raw[0] - aOff[0], raw[1] - aOff[1], raw[2] - aOff[2]};
+		const float c[3] = {
+			aM[0] * dv[0] + aM[1] * dv[1] + aM[2] * dv[2],
+			aM[3] * dv[0] + aM[4] * dv[1] + aM[5] * dv[2],
+			aM[6] * dv[0] + aM[7] * dv[1] + aM[8] * dv[2],
+		};
+		worst = std::max(
+			worst,
+			std::fabs(std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]) - kG)
+		);
+	}
+	TRUE_(worst < 5e-3);
+}
+
 int main() {
 	testQuatBasics();
 	testIntegration();
@@ -2202,6 +2713,20 @@ int main() {
 	testAccelModelStoreNormalisesGyroMatrix();
 	testAccelModelStorePreservesFittedGyroMatrix();
 	testAccelModelStoreIsActuallyApplied();
+	testStreamingNormalEquationsMatchBatch();
+	testOnlineRecoversBiasAndScale();
+	testOnlineIgnoresATrackerThatNeverMoves();
+	testOnlineNoveltyGateAcceptsRealMovement();
+	testOnlineRequiresRest();
+	testOnlineRejectsSteadyNonGravity();
+	testOnlineFollowsDriftingBias();
+	testOnlineDoesNotConvergeFromWearAlone();
+	testOnlineReadinessConditionsAreIndependent();
+	testOnlineStateIsBounded();
+	testOnlineSurvivesNoise();
+	testOnlineEstimatePrecedence();
+	testOnlinePersistenceIsRateLimited();
+	testOnlineApplyPathProducesAUsableModel();
 
 	if (gFailures == 0) {
 		std::printf("selftest: %d checks passed\n", gChecks);
