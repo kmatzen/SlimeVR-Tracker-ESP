@@ -27,24 +27,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "calibrationfeatures.h"
 #include "errormodel.h"
-
-/**
- * Whether the guided six-position accelerometer calibration is built in.
- *
- * On by default. A board opts out with `-D DISABLE_GUIDED_ACCEL_CALIBRATION`,
- * which exists for exactly one reason: BOARD_GLOVE_IMU_SLIMEVR_DEV builds every
- * IMU driver into a 1280 kB partition and was already 99.8% full before this
- * feature -- 2672 bytes spare against roughly 17 kB of flow, about 5 kB of
- * which is the soft-float double library it is the first code on that board to
- * need. No amount of trimming closes a gap that size, so it is left out there
- * rather than shrunk into something that no longer works.
- */
-#ifdef DISABLE_GUIDED_ACCEL_CALIBRATION
-#define GUIDED_ACCEL_CALIBRATION 0
-#else
-#define GUIDED_ACCEL_CALIBRATION 1
-#endif
 
 // Free of any Arduino or hardware dependency so the state machine can be unit
 // tested on a host. See tools/fusion-bench/tests/selftest.cpp.

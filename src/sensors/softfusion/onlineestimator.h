@@ -27,27 +27,11 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "calibrationfeatures.h"
 #include "errormodel.h"
 
 // Free of any Arduino or hardware dependency so the estimator can be unit
 // tested on a host. See tools/fusion-bench/tests/selftest.cpp.
-
-/**
- * Whether continuous online accelerometer estimation is built in.
- *
- * Shares `DISABLE_GUIDED_ACCEL_CALIBRATION` because it shares that feature's
- * cost: the same solve, the same soft-float `double` library, and the same
- * boards with no room for either. A board that cannot afford the guided flow
- * certainly cannot afford an estimator that runs all the time.
- *
- * Separately nameable so the two can be split later if a board ever wants one
- * without the other.
- */
-#ifdef DISABLE_GUIDED_ACCEL_CALIBRATION
-#define ONLINE_ACCEL_ESTIMATION 0
-#else
-#define ONLINE_ACCEL_ESTIMATION 1
-#endif
 
 namespace SlimeVR::Sensors::SoftFusion {
 

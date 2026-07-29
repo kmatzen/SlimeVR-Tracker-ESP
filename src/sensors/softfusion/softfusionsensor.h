@@ -483,7 +483,9 @@ public:
 
 	void cancelCalibration() final { calibrator.cancelCalibration(); }
 
+#if ONLINE_ACCEL_ESTIMATION
 	void printOnlineEstimate() final { calibrator.printOnlineEstimate(); }
+#endif
 
 	[[nodiscard]] bool isFlagSupported(SensorToggles toggle) const final {
 		return toggle == SensorToggles::CalibrationEnabled

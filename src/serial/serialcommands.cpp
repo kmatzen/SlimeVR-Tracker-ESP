@@ -31,8 +31,7 @@
 #include "calibration.h"
 #include "configuration/gyroscalecmd.h"
 #include "logging/Logger.h"
-#include "sensors/softfusion/onlineestimator.h"
-#include "sensors/softfusion/sixposition.h"
+#include "sensors/softfusion/calibrationfeatures.h"
 #include "utils.h"
 
 #ifdef ESP32
@@ -401,18 +400,16 @@ void cmdGet(CmdParser* parser) {
 		cmdGetGyroScale();
 	}
 
-	if (parser->equalCmdParam(1, "ACCELCAL")) {
 #if ONLINE_ACCEL_ESTIMATION
+	if (parser->equalCmdParam(1, "ACCELCAL")) {
 		// What the tracker has worked out for itself from ordinary use, as
 		// opposed to what CALIBRATE ACCEL would produce from a deliberate
-		// procedure. Reported rather than applied -- see printOnlineEstimate.
+		// procedure.
 		for (auto& sensor : sensorManager.getSensors()) {
 			sensor->printOnlineEstimate();
 		}
-#else
-		logger.info("Online accelerometer estimation is not built into this firmware");
-#endif
 	}
+#endif
 
 	if (parser->equalCmdParam(1, "INFO")) {
 		printState();
