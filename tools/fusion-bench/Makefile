@@ -22,8 +22,10 @@ CXXFLAGS += -std=c++17 -Wall -Wextra -Isrc -I$(VQF_DIR)
 BUILD    := build
 
 BENCH_SRC := src/main.cpp src/dataset.cpp src/metrics.cpp src/synth.cpp \
+             src/gyroscale.cpp \
              $(VQF_DIR)/vqf.cpp
 TEST_SRC  := tests/selftest.cpp src/dataset.cpp src/metrics.cpp src/synth.cpp \
+             src/gyroscale.cpp \
              $(VQF_DIR)/vqf.cpp
 
 # Headers are prerequisites too. Without these, editing a header leaves a stale
