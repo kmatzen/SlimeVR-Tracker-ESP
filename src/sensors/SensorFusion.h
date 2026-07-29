@@ -13,6 +13,52 @@
 #include "../motionprocessing/types.h"
 
 namespace SlimeVR::Sensors {
+
+/// Tuned VQF parameters. **Currently unreachable -- no shipped configuration
+/// uses these**, which is worth knowing before tuning them further.
+///
+/// They are read only by the convenience `SensorFusion(gyrTs, ...)` constructor
+/// below, and the single call site of that constructor is guarded by
+/// `#if !MPU_USE_DMPMAG` (mpu9250sensor.h), while `MPU_USE_DMPMAG` is defined to
+/// 1 unconditionally in the same header and is not overridable from
+/// platformio.ini. MPU9250, MPU6050 and ICM20948 therefore all run
+/// `SensorFusionDMP`, which contains a `DMPMag` and no VQF at all. Every IMU
+/// that does run VQF goes through the softfusion path, which passes
+/// `SensorType::SensorVQFParams` -- and all ten drivers define that as
+/// `VQFParams{}`, i.e. the library's own defaults.
+///
+/// So the live configuration everywhere is `lib/vqf/vqf.h`'s defaults, not this.
+/// Note those are not upstream VQF's defaults either: they were replaced by an
+/// optimizer run (see the header) and are themselves tuned.
+///
+/// ## Units and the one constraint that matters
+///
+/// `tauAcc` seconds, `restMinT` seconds, `restThGyr` deg/s, `restThAcc` m/s^2.
+///
+/// `restThAcc` bounds the magnitude of the accelerometer residual against VQF's
+/// rest low-pass, checked every sample; a single sample over it resets the rest
+/// timer, so rest requires `restMinT / accTs` *consecutive* samples under it.
+/// Set it below the accelerometer's noise floor and rest is never detected, so
+/// rest-gated gyroscope bias estimation never runs -- and that estimation is
+/// worth about three orders of magnitude of heading drift (0.4626 deg/s of
+/// measured bias, ~27 deg/min uncorrected, versus 0.0187 deg/min with it
+/// running). The failure is silent: nothing in the logs reports it. The symptom
+/// is `first_rest_sec == -1` in a fusion-bench replay.
+///
+/// Because it is a bound on a peak over a window rather than on an RMS, the safe
+/// value sits well above the noise floor -- measured at about 3.3x the per-axis
+/// sigma, equivalently 1.9x the vector-magnitude sigma, at the accelerometer
+/// rates this firmware runs (100-250 Hz). The multiplier is not a constant: it
+/// grows with the rest window in samples, so derive it rather than assuming it.
+/// `fusion-bench noise CAPTURE.csv` reports the noise floor, the exact minimum
+/// threshold a capture admits, and the margin of the configured value.
+///
+/// Measured margins on an LSM6DSV (per-axis sigma 0.0034/0.0032/0.0051 m/s^2,
+/// accelerometer at 120 Hz): the live default of 1.418598 sits about 60x above
+/// the cliff, and the 0.06 here would sit about 2.7x above it -- above, but
+/// thinly enough that a noisier part, a higher bandwidth setting, or a vibrating
+/// mount could cross it. That thinness, not a measured regression, is the reason
+/// not to propagate these to the softfusion drivers; see issue #4.
 constexpr VQFParams DefaultVQFParams = VQFParams{
 	.tauAcc = 2.0f,
 	.restMinT = 2.0f,

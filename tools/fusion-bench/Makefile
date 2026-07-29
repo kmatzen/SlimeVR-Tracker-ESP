@@ -22,10 +22,10 @@ CXXFLAGS += -std=c++17 -Wall -Wextra -Isrc -I$(VQF_DIR)
 BUILD    := build
 
 BENCH_SRC := src/main.cpp src/dataset.cpp src/metrics.cpp src/synth.cpp \
-             src/gyroscale.cpp \
+             src/gyroscale.cpp src/noisefloor.cpp \
              $(VQF_DIR)/vqf.cpp
 TEST_SRC  := tests/selftest.cpp src/dataset.cpp src/metrics.cpp src/synth.cpp \
-             src/gyroscale.cpp \
+             src/gyroscale.cpp src/noisefloor.cpp \
              $(VQF_DIR)/vqf.cpp
 
 # Headers are prerequisites too. Without these, editing a header leaves a stale
@@ -42,7 +42,9 @@ HEADERS   := $(wildcard src/*.h) $(VQF_DIR)/vqf.h \
              $(wildcard $(ROOT)/src/configuration/accelmodel.h)
 
 SOURCES := src/main.cpp src/dataset.cpp src/metrics.cpp src/synth.cpp \
+           src/noisefloor.cpp \
            src/dataset.h src/metrics.h src/quatmath.h src/synth.h \
+           src/noisefloor.h \
            tests/selftest.cpp
 
 # The repo's `format` CI job runs clang-format 17 over the whole tree, and

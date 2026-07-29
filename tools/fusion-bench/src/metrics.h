@@ -91,10 +91,18 @@ constexpr double kRestMagnitudeDps = 5.0;
 // Shortest rest segment from which a drift rate will be estimated.
 constexpr double kMinDriftSegmentSec = 5.0;
 
-// VQF tuning knobs the bench is allowed to vary. Defaults mirror
-// SlimeVR::Sensors::DefaultVQFParams so that "fusion-bench run" measures what
-// the firmware would actually do on an MPU9250, and --stock measures what every
-// softfusion IMU currently does instead.
+// VQF tuning knobs the bench is allowed to vary.
+//
+// Defaults mirror SlimeVR::Sensors::DefaultVQFParams. Note what that does *not*
+// mean: those tuned parameters are unreachable in the firmware, so this is a
+// hypothetical configuration rather than any shipped device's. The convenience
+// SensorFusion constructor that reads them is only called under
+// `#if !MPU_USE_DMPMAG`, and MPU_USE_DMPMAG is hardcoded to 1 -- MPU9250 runs
+// SensorFusionDMP, which has no VQF in it at all.
+//
+// So `--stock` is the setting that measures what every real device does, and the
+// default measures the alternative. Both are worth keeping: the delta between
+// them is the acceptance test for issue #4.
 struct BenchParams {
 	double tauAcc = 2.0;
 	double restMinT = 2.0;

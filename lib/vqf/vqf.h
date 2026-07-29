@@ -40,6 +40,22 @@ typedef float vqf_real_t;
  * algorithm. The time constants #tauAcc and #tauMag can be tuned to change the trust on
  * the accelerometer and magnetometer measurements, respectively. The remaining
  * parameters influence bias estimation and magnetometer rejection.
+ *
+ * @warning **The "Default value:" lines below describe upstream VQF, not this
+ * struct.** Nearly every numeric default here was replaced by a SlimeVR
+ * optimizer run ("Optimized VQFParams 2: Electric Boogaloo", #472) and the
+ * Doxygen was not updated with it, so the two disagree by as much as 20x. The
+ * initialisers in the code are authoritative; read the prose for what a
+ * parameter *means* and ignore the number it quotes.
+ *
+ * Affected: #tauAcc, #biasSigmaInit, #biasForgettingTime, #biasClip,
+ * #biasSigmaMotion, #biasVerticalForgettingFactor, #biasSigmaRest, #restMinT,
+ * #restFilterTau, #restThGyr, #restThAcc.
+ *
+ * This is also the configuration every softfusion IMU actually runs: all ten
+ * drivers define `SensorVQFParams` as `VQFParams{}`, so these values are live
+ * rather than nominal. The tuned set in `SlimeVR::Sensors::DefaultVQFParams` is
+ * unreachable -- see the comment there.
  */
 struct VQFParams {
 	/**
@@ -187,7 +203,16 @@ struct VQFParams {
 	 * reference must be below the given threshold. (Furthermore, the absolute value of
 	 * each component must be below #biasClip).
 	 *
-	 * Default value: 2.0 °/s
+	 * Default value: 2.0 °/s (upstream; see the warning on #VQFParams)
+	 *
+	 * This, not #restThAcc, is the gate that rejects motion in practice. The
+	 * accelerometer residual barely moves during rotation about the gravity
+	 * vector -- gravity stays put -- so on continuously moving trajectories it is
+	 * this threshold and #biasClip that keep rest from being declared. Lowering
+	 * it costs rest detection on a tracker resting somewhere slightly unsteady;
+	 * raising it risks absorbing slow steady rotation into the bias estimate,
+	 * which is the failure that matters, because a corrupted bias is applied to
+	 * every subsequent sample.
 	 */
 	vqf_real_t restThGyr = 1.399189;
 	/**
@@ -196,7 +221,42 @@ struct VQFParams {
 	 * For rest to be detected, the norm of the deviation between measurement and
 	 * reference must be below the given threshold.
 	 *
-	 * Default value: 0.5 m/s²
+	 * Default value: 0.5 m/s² (upstream; see the warning on #VQFParams)
+	 *
+	 * ## Why this value, and what it must stay above
+	 *
+	 * This is the switch that turns rest-gated gyroscope bias estimation on and
+	 * off, and that estimation is the most valuable single thing in the
+	 * calibration path: measured on a static LSM6DSV capture it takes 0.4626 °/s
+	 * of gyroscope bias -- about 27 °/min of heading drift if left alone -- down
+	 * to 0.0187 °/min of residual.
+	 *
+	 * The deviation checked here is not a standard deviation over a window. It is
+	 * the instantaneous norm of the residual between the raw sample and the
+	 * low-pass reference, tested every sample, and a single sample over the
+	 * threshold resets #restT. Rest therefore needs `restMinT / accTs`
+	 * *consecutive* samples under the threshold, which makes this a bound on the
+	 * peak of the sensor's noise over a window rather than on its RMS.
+	 *
+	 * Consequences worth keeping in mind before changing it:
+	 *
+	 * - **Below the noise floor, rest is never detected and bias estimation never
+	 *   runs.** Drift degrades by roughly two orders of magnitude, and nothing
+	 *   reports it -- the only symptom is `first_rest_sec == -1` in a replay.
+	 * - Because it bounds a peak, the safe value is several sigma above the noise
+	 *   floor: measured at ~3.3x per-axis sigma (~1.9x vector-magnitude sigma)
+	 *   over the 100-250 Hz accelerometer rates this firmware uses. That
+	 *   multiplier grows with the rest window in samples, so it is not a
+	 *   constant to copy between configurations.
+	 * - This value sits about 60x above the cliff on an LSM6DSV (per-axis sigma
+	 *   0.0034/0.0032/0.0051 m/s², accelerometer at 120 Hz). Being generous costs
+	 *   little here: the #restThGyr gate and #biasClip are what actually reject
+	 *   motion, and measured on moving trajectories (walk, yaw-sweep, tumble)
+	 *   rest is not detected at any accelerometer threshold, including this one.
+	 *
+	 * `tools/fusion-bench noise CAPTURE.csv` measures the noise floor of a real
+	 * capture, computes the exact minimum threshold that capture admits, and
+	 * reports the margin of the configured value. Prefer that to a multiplier.
 	 */
 	vqf_real_t restThAcc = 1.418598;
 

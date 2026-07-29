@@ -21,6 +21,41 @@ make suite    # run the standard benchmark
 make check    # run it against the committed baseline (this is the CI gate)
 ```
 
+Subcommands, once built:
+
+```sh
+./build/fusion-bench suite [--baseline FILE] [--write-baseline FILE] [--json FILE]
+./build/fusion-bench gen TRAJECTORY OUT.csv [options]
+./build/fusion-bench run DATASET.csv [options]
+./build/fusion-bench sweep DATASET.csv PARAM FROM TO STEPS
+./build/fusion-bench gyro-scale DATASET.csv
+./build/fusion-bench noise DATASET.csv [options]
+```
+
+`gen` options — the error model to inject:
+
+| flag | default | meaning |
+| --- | --- | --- |
+| `--duration S` | 60 | capture length, seconds |
+| `--rate HZ` | 250 | sample rate |
+| `--seed N` | 1 | RNG seed; identical seeds give byte-identical datasets |
+| `--gyro-bias DPS` | 0.15 | constant gyroscope bias |
+| `--gyro-noise DPS` | 0.03 | per-sample gyroscope white noise, 1σ |
+| `--gyro-scale FRAC` | 0 | fractional scale error, e.g. `0.01` for 1% |
+| `--accel-bias MS2` | 0.02 | constant accelerometer bias |
+| `--accel-noise MS2` | 0.02 | **per-axis** accelerometer white noise, 1σ |
+| `--with-mag` | off | emit a magnetometer column |
+
+Note `--accel-noise` is per axis, while the noise figures quoted for real parts
+are usually vector magnitude — √3 larger for three comparable axes. Mixing the
+two moves any threshold derived from them by 73%.
+
+`run` options: `--json FILE`, `--stock` (use VQF's own defaults, which is what
+every real device runs), `--mag`, and the four tuning knobs `--tau-acc`,
+`--rest-th-gyr`, `--rest-th-acc`, `--rest-min-t`. The knobs also compose with
+`sweep`. `sweep` PARAM is one of `tau-acc`, `rest-th-gyr`, `rest-th-acc`,
+`rest-min-t`.
+
 `make suite` takes well under a second, which is the point: it can run on every
 PR without anyone resenting it.
 
@@ -31,8 +66,8 @@ downloads. Each case isolates one thing:
 
 | case | what it isolates |
 | --- | --- |
-| `static-tuned` | drift with a realistic residual gyro bias, using `DefaultVQFParams` |
-| `static-stock` | the same input with VQF's own default parameters |
+| `static-tuned` | drift with a realistic residual gyro bias, using `DefaultVQFParams`; doubles as the rest-cliff guard (see below) |
+| `static-stock` | the same input with VQF's own default parameters — **this is what every real device runs** |
 | `tilted` | inclination tracking away from level |
 | `yaw-sweep` | heading tracking through sustained yaw motion |
 | `tumble` | general multi-axis motion |
@@ -158,6 +193,76 @@ lesson: a synthetic model can put you confidently on the wrong side of a real
 threshold. Synthetic data is the right tool for *finding* a cliff and a poor one
 for deciding whether you are near it. Use it to reason, then measure.
 
+### The cliff, located exactly
+
+The account above leaves the cliff bracketed between two sweep points and the
+margin stated as "about 1.5×". Both can be sharpened, because the cliff is not
+something to bisect for — it is computable in closed form from a capture.
+
+Rest requires `restMinT / accTs` *consecutive* samples whose residual is under
+the threshold, since one sample over it resets the timer. So the smallest
+threshold that admits rest at all is the quietest such window's peak:
+
+    min over all windows of ( max residual within that window )
+
+`fusion-bench noise` computes that sliding-window minimum-of-maximum directly.
+It agrees with bisecting actual runs to within 0.06% across sample rates from
+100–250 Hz, rest windows from 2–6 s, and noise from 0.002–0.05 m/s²
+(`testNoiseFloorPredictsTheRestCliffExactly`).
+
+```sh
+./build/fusion-bench noise capture.csv            # what this device runs
+./build/fusion-bench noise capture.csv --stock    # ditto, explicitly
+```
+
+```
+accelerometer noise (m/s^2, 1 sigma):
+  per axis     x 0.00340  y 0.00320  z 0.00510
+  vector       0.00686
+
+minimum restThAcc that admits rest:
+  anywhere              0.01924  (includes the filter's startup transient)
+  once settled          0.02359  (= 3.44 x vector sigma) <- configure against this
+configured restThAcc:   1.418598  (60.1x the settled minimum)
+```
+
+Three things this changes about the story above:
+
+**The margin is 60×, not 1.5×.** The 1.5× figure compared the measured noise to
+the *cliff bracket* found synthetically. The right comparison is measured noise
+to the threshold actually in force, and the threshold in force is stock
+`1.418598` — because `DefaultVQFParams` is unreachable (see the comment on it in
+`src/sensors/SensorFusion.h`). Were the tuned `0.06` wired up, its margin on this
+part would be about 2.7×: above the cliff, but thin.
+
+**Two bounds, not one.** A threshold between them catches rest during the
+filter's startup transient and never again — VQF's low-pass is a plain running
+mean for the first `restFilterTau`, so early residuals are artificially small.
+`first_rest_sec` looks healthy while bias estimation silently stops after boot,
+which is worse than the outright failure because the usual diagnostic misses it.
+
+**The multiplier is not a constant, so don't hardcode one.** It grows with the
+rest window in samples:
+
+| rate | `restMinT` | N | cliff / per-axis σ |
+| --- | --- | --- | --- |
+| 100 Hz | 2.0 s | 200 | 3.23 |
+| 250 Hz | 2.0 s | 500 | 3.24 |
+| 250 Hz | 8.0 s | 2000 | 3.82 |
+
+Near 3.3 across the 100–250 Hz accelerometer rates this firmware uses, which is
+what makes "keep it well above the noise floor" quantitative. Above roughly
+500 Hz it departs from anything the noise alone explains — 35σ at 1 kHz with
+`restMinT` 8 s, where a peak-of-N argument predicts about 4. VQF is compiled
+single-precision (`VQF_SINGLE_PRECISION`, `vqf.h`) and at 1 kHz the rest filter's
+normalised cutoff is fc/fs ≈ 2e-4, so the low-pass stops tracking DC. Out of
+range for this firmware; recorded so nobody extrapolates the multiplier there.
+
+The threshold is *not* what rejects motion, incidentally. On `walk`, `yaw-sweep`
+and `tumble`, rest is never detected at any accelerometer threshold including
+stock's — `restThGyr` and `biasClip` do that work. Being generous with
+`restThAcc` costs little; being stingy risks the silent failure.
+
 ## Bench tests on real hardware
 
 These are the physical protocols. They are deliberately over-specified: the
@@ -195,12 +300,18 @@ Measures: `heading_drift_deg_per_min`, `tilt_error_deg_rms`, `first_rest_sec`.
 4. Start logging. **Do not touch the desk for 30 minutes.** Walking heavily
    nearby is enough to trip rest detection.
 5. `./build/fusion-bench run capture.csv`
+6. `./build/fusion-bench noise capture.csv` — the noise floor of this part and
+   how much margin its rest threshold has.
 
 What to look for:
 
 - `first_rest_sec` should be a small positive number. **If it is `-1`, stop —
   nothing else in the run means anything**, because bias estimation never ran.
   That alone confirms or refutes the `restThAcc` hypothesis above.
+- From `noise`, the configured threshold should be comfortably above the *settled*
+  minimum — at least 2×. A positive `first_rest_sec` with a margin under 1× means
+  rest was reached only during the filter's startup transient and will not be
+  reached again, which `run` alone cannot tell you.
 - `heading_drift_deg_per_min` is typically 0.5–3 °/min for a 6-DoF tracker.
 - `tilt_error_deg_rms` should be well under 1°. It has an absolute gravity
   reference, so unlike heading it should not drift at all.

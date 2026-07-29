@@ -14,6 +14,7 @@
 #include "dataset.h"
 #include "gyroscale.h"
 #include "metrics.h"
+#include "noisefloor.h"
 #include "quatmath.h"
 #include "synth.h"
 
@@ -2651,6 +2652,150 @@ void testOnlineApplyPathProducesAUsableModel() {
 	TRUE_(worst < 5e-3);
 }
 
+// ---------------------------------------------------------------------------
+// Accelerometer noise floor and the rest threshold it implies (issue #4).
+// ---------------------------------------------------------------------------
+
+// Builds a static capture with a known injected per-axis noise sigma.
+Dataset staticCaptureWithNoise(
+	double accelNoise,
+	double rateHz,
+	double durationSec,
+	uint64_t seed
+) {
+	SynthParams sp;
+	sp.durationSec = durationSec;
+	sp.rateHz = rateHz;
+	sp.accelNoise = accelNoise;
+	sp.gyroBiasDps = 0.4626;  // the bias measured in Bench Test A
+	sp.seed = seed;
+	Dataset ds;
+	std::string err;
+	TRUE_(generate("static", sp, ds, err));
+	return ds;
+}
+
+// Smallest restThAcc at which a real run reports rest, found by bisection.
+// This is the ground truth the predictor is checked against: it runs the actual
+// filter and asks whether first_rest_sec came back positive.
+double bisectRestCliff(const Dataset& ds, double restMinT) {
+	double lo = 1e-5;
+	double hi = 3.0;
+	for (int i = 0; i < 40; i++) {
+		const double mid = 0.5 * (lo + hi);
+		BenchParams p;
+		p.restMinT = restMinT;
+		p.restThAcc = mid;
+		const RunResult r = runFusion(ds, p);
+		if (r.firstRestSec > 0) {
+			hi = mid;
+		} else {
+			lo = mid;
+		}
+	}
+	return hi;
+}
+
+void testNoiseFloorRecoversInjectedNoise() {
+	// The successive-difference estimator should return the sigma that was
+	// injected. If this drifts, every threshold derived from it is wrong by the
+	// same factor, silently.
+	const Dataset ds = staticCaptureWithNoise(0.01, 250.0, 60.0, 4242);
+	BenchParams p;
+	const AccelNoiseResult r = measureAccelNoise(ds, p);
+	TRUE_(r.valid);
+	NEAR(r.axisSigma[0], 0.01, 5e-4);
+	NEAR(r.axisSigma[1], 0.01, 5e-4);
+	NEAR(r.axisSigma[2], 0.01, 5e-4);
+	// Vector magnitude is sqrt(3) larger for three equal independent axes.
+	// Confusing the two moves a derived threshold by 73%, so pin it.
+	NEAR(r.vectorSigma, 0.01 * std::sqrt(3.0), 1e-3);
+}
+
+void testNoiseFloorPredictsTheRestCliffExactly() {
+	// The whole point of `requiredThreshold`: it is not an estimate of the
+	// cliff, it is the cliff. A sliding-window minimum-of-maximum over the
+	// residual series must agree with bisecting actual runs.
+	//
+	// Checked across rate, rest window, and noise level together, because the
+	// multiplier relating noise to threshold is constant in none of them -- a
+	// test at a single operating point would pass for the wrong reason.
+	struct Case {
+		double accelNoise;
+		double rateHz;
+		double restMinT;
+	};
+	const Case cases[] = {
+		{0.01, 250.0, 2.0},
+		{0.01, 100.0, 2.0},
+		{0.002, 250.0, 2.0},
+		{0.05, 250.0, 2.0},
+		{0.01, 250.0, 6.0},
+		{0.00396, 120.0, 2.0},  // the LSM6DSV of Bench Test A
+	};
+	for (const Case& c : cases) {
+		const Dataset ds = staticCaptureWithNoise(c.accelNoise, c.rateHz, 120.0, 11);
+		BenchParams p;
+		p.restMinT = c.restMinT;
+		const AccelNoiseResult r = measureAccelNoise(ds, p);
+		TRUE_(r.valid);
+		const double measured = bisectRestCliff(ds, c.restMinT);
+		// 1% of the value: bisection converges to a point, but rest also has to
+		// clear the gyroscope gate on the same sample, so the two need not agree
+		// to the last bit.
+		NEAR(r.requiredThreshold, measured, 0.01 * measured);
+	}
+}
+
+void testNoiseFloorCliffScalesWithNoise() {
+	// At a fixed rate and rest window the cliff is proportional to the noise, so
+	// the sigma multiple is the same across two decades. This is what makes
+	// "keep the threshold well above the noise floor" a checkable instruction
+	// rather than a vague one.
+	double firstMultiple = 0;
+	const double noises[] = {0.002, 0.005, 0.01, 0.02, 0.05};
+	for (size_t i = 0; i < 5; i++) {
+		const Dataset ds = staticCaptureWithNoise(noises[i], 250.0, 120.0, 77);
+		BenchParams p;
+		const AccelNoiseResult r = measureAccelNoise(ds, p);
+		TRUE_(r.valid);
+		if (i == 0) {
+			firstMultiple = r.sigmaMultiple;
+			// Recorded so a change in the filter shows up as a number rather
+			// than only as a broken ratio: ~1.9x vector sigma, ~3.3x per-axis.
+			NEAR(firstMultiple, 1.93, 0.25);
+		} else {
+			NEAR(r.sigmaMultiple, firstMultiple, 0.12 * firstMultiple);
+		}
+	}
+}
+
+void testNoiseFloorSettledBoundIsNeverBelowTheStartupBound() {
+	// The startup window is artificially quiet -- VQF's low-pass is a running
+	// mean there -- so the bound including it can only be lower than or equal to
+	// the settled bound. If this inverts, the two have been swapped somewhere.
+	const Dataset ds = staticCaptureWithNoise(0.01, 250.0, 120.0, 909);
+	BenchParams p;
+	const AccelNoiseResult r = measureAccelNoise(ds, p);
+	TRUE_(r.valid);
+	TRUE_(r.requiredThreshold <= r.settledThreshold * 1.0001);
+	TRUE_(r.settledThreshold > 0);
+	// The quietest window's peak cannot exceed the whole series' peak.
+	TRUE_(r.settledThreshold <= r.residualPeak * 1.0001);
+	// And the RMS is below the peak, or the residual series is degenerate.
+	TRUE_(r.residualRms < r.residualPeak);
+}
+
+void testNoiseFloorRefusesACaptureTooShortToMeasure() {
+	// Refusing is the useful answer. A threshold derived from 50 samples would
+	// be a confident number built from nothing.
+	const Dataset ds = staticCaptureWithNoise(0.01, 250.0, 0.2, 5);
+	BenchParams p;
+	const AccelNoiseResult r = measureAccelNoise(ds, p);
+	TRUE_(!r.valid);
+	TRUE_(!r.reason.empty());
+}
+
 int main() {
 	testQuatBasics();
 	testIntegration();
@@ -2727,6 +2872,12 @@ int main() {
 	testOnlineEstimatePrecedence();
 	testOnlinePersistenceIsRateLimited();
 	testOnlineApplyPathProducesAUsableModel();
+
+	testNoiseFloorRecoversInjectedNoise();
+	testNoiseFloorPredictsTheRestCliffExactly();
+	testNoiseFloorCliffScalesWithNoise();
+	testNoiseFloorSettledBoundIsNeverBelowTheStartupBound();
+	testNoiseFloorRefusesACaptureTooShortToMeasure();
 
 	if (gFailures == 0) {
 		std::printf("selftest: %d checks passed\n", gChecks);
