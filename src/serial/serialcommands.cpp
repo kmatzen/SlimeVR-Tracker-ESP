@@ -31,6 +31,7 @@
 #include "calibration.h"
 #include "configuration/gyroscalecmd.h"
 #include "logging/Logger.h"
+#include "sensors/softfusion/sixposition.h"
 #include "utils.h"
 
 #ifdef ESP32
@@ -615,6 +616,14 @@ void cmdDeleteCalibration(CmdParser* parser) {
  * happen; this command only starts the thing.
  */
 void cmdCalibrate(CmdParser* parser) {
+#if !GUIDED_ACCEL_CALIBRATION
+	(void)parser;
+	logger.info(
+		"Guided accelerometer calibration is not built into this firmware; this "
+		"board has no flash left for it"
+	);
+	return;
+#else
 	const bool cancel
 		= parser->getParamCount() > 1 && parser->equalCmdParam(1, "CANCEL");
 	const bool accel = parser->getParamCount() > 1 && parser->equalCmdParam(1, "ACCEL");
@@ -665,6 +674,7 @@ void cmdCalibrate(CmdParser* parser) {
 			sensors[i]->startCalibration(CALIBRATION_TYPE_INTERNAL_ACCEL);
 		}
 	}
+#endif
 }
 
 #if EXT_SERIAL_COMMANDS

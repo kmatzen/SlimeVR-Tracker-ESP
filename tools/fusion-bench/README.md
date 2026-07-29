@@ -445,6 +445,15 @@ is worth much more than a confidently wrong one.
 session covering orientations off the axes and fit it on the host — that path
 observes the cross terms this one cannot.
 
+**One board does not have it.** `BOARD_GLOVE_IMU_SLIMEVR_DEV` builds every IMU
+driver into a 1280 kB partition and was already 99.8% full before this existed —
+2672 bytes spare, against roughly 17 kB for the flow. About 5 kB of that is the
+soft-float `double` library, which this is the first code on that board to need;
+the rest is the collector and the fit. No amount of trimming closes a gap that
+size, so it is compiled out there (`-D DISABLE_GUIDED_ACCEL_CALIBRATION`) rather
+than shrunk into something that no longer works. `CALIBRATE ACCEL` says so
+rather than failing silently. Every other board has it.
+
 ### Test D — temperature ramp
 
 The firmware has temperature-gradient compensation and nothing currently proves
