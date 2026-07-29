@@ -928,24 +928,137 @@ void testFitRejectsInsufficientData() {
 }
 
 void testFitRejectsDegenerateOrientations() {
-	// All samples near one attitude leave the quadric under-determined. The fit
-	// must fail rather than return a confident, wrong model -- a bad
-	// calibration is worse than none, because it is applied to every sample.
+	// Enough samples for the quadric to be nominally determined, but all in one
+	// plane. The solve would succeed and return a confident, wrong model, which
+	// then multiplies every sample -- worse than having no calibration at all.
 	constexpr double g = 9.80665;
-	std::vector<float> samples;
+	std::vector<float> planar;
 	for (int i = 0; i < 60; i++) {
-		const double th = 0.001 * i;
-		samples.push_back(static_cast<float>(g * std::sin(th)));
-		samples.push_back(static_cast<float>(g * std::cos(th)));
-		samples.push_back(0.0f);
+		const double th = 2.0 * kPi * i / 60.0;
+		planar.push_back(static_cast<float>(g * std::cos(th)));
+		planar.push_back(static_cast<float>(g * std::sin(th)));
+		planar.push_back(0.0f);
 	}
 	ErrorModel m;
-	const bool ok = fitErrorModel(samples.data(), 60, static_cast<float>(g), m);
-	if (ok) {
-		// If it does return, the result must at least not be wild.
-		TRUE_(std::fabs(m.m[0]) < 100.0f);
+	TRUE_(!fitErrorModel(planar.data(), 60, static_cast<float>(g), m));
+	TRUE_(m.isIdentity());  // untouched on failure
+
+	// Tightly clustered about one attitude: also plenty of samples, also
+	// unobservable.
+	std::vector<float> clustered;
+	for (int i = 0; i < 60; i++) {
+		const double th = 0.001 * i;
+		clustered.push_back(static_cast<float>(g * std::sin(th)));
+		clustered.push_back(static_cast<float>(g * std::cos(th)));
+		clustered.push_back(0.0f);
 	}
-	TRUE_(true);
+	ErrorModel m2;
+	TRUE_(!fitErrorModel(clustered.data(), 60, static_cast<float>(g), m2));
+	TRUE_(m2.isIdentity());
+}
+
+void testFitRejectsNearDegenerateCoverage() {
+	// The case the conditioning check actually exists for, and the one a
+	// count-only guard misses entirely.
+	//
+	// A narrow band of latitudes has plenty of samples and is not exactly
+	// coplanar, so the solve succeeds -- but the model it produces is badly
+	// wrong on any direction outside the band it was trained on. That is the
+	// dangerous failure: it looks like a successful calibration.
+	//
+	// Builds a physically correct set: the true field always has magnitude g,
+	// corrupted by a real gain and bias, so the only thing varying is coverage.
+	constexpr double g = 9.80665;
+	const double gain[3] = {1.05, 0.98, 1.10};
+	const double bias[3] = {0.15, -0.10, 0.25};
+
+	auto build = [&](double tilt) {
+		std::vector<float> out;
+		for (int i = 0; i < 180; i++) {
+			const double th = 2.0 * kPi * i / 180.0;
+			const double ph = tilt * std::sin(3.0 * th);
+			const double x = std::cos(th) * std::cos(ph);
+			const double y = std::sin(th) * std::cos(ph);
+			const double z = std::sin(ph);
+			out.push_back(static_cast<float>(g * x / gain[0] + bias[0]));
+			out.push_back(static_cast<float>(g * y / gain[1] + bias[1]));
+			out.push_back(static_cast<float>(g * z / gain[2] + bias[2]));
+		}
+		return out;
+	};
+
+	// Error the fitted model makes on a direction it never saw: straight up.
+	auto errorOnUnseenDirection = [&](const ErrorModel& m) {
+		const float in[3] = {
+			static_cast<float>(bias[0]),
+			static_cast<float>(bias[1]),
+			static_cast<float>(g / gain[2] + bias[2]),
+		};
+		float out[3];
+		m.apply(in, out);
+		const double mag
+			= std::sqrt(out[0] * out[0] + out[1] * out[1] + out[2] * out[2]);
+		return std::fabs(mag - g);
+	};
+
+	// A narrow band must be refused.
+	const std::vector<float> narrow = build(0.15);
+	ErrorModel bad;
+	TRUE_(!fitErrorModel(narrow.data(), narrow.size() / 3, static_cast<float>(g), bad));
+	TRUE_(bad.isIdentity());
+
+	// And the refusal is justified: forcing the same data through a fit
+	// produces a model that is wrong by a large margin off-band. Verified here
+	// by checking that wider coverage of the *same* error model succeeds and is
+	// accurate, so the difference is coverage rather than the data being
+	// unfittable.
+	const std::vector<float> wide = build(0.9);
+	ErrorModel good;
+	TRUE_(fitErrorModel(wide.data(), wide.size() / 3, static_cast<float>(g), good));
+	TRUE_(errorOnUnseenDirection(good) < 0.01);
+}
+
+void testFitAcceptsSixPositionCoverage() {
+	// The classic procedure -- each axis up and down -- must be accepted, and
+	// with realistic hand-placement error rather than perfect alignment. A
+	// check that rejected this would make the whole calibration unusable.
+	constexpr double g = 9.80665;
+	const double dirs[6][3]
+		= {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
+	Rng rng(7);
+	std::vector<float> samples;
+	for (int rep = 0; rep < 10; rep++) {
+		for (const auto& d : dirs) {
+			// Up to ~10 degrees of misplacement per axis.
+			double v[3] = {
+				d[0] + 0.17 * rng.normal() * 0.5,
+				d[1] + 0.17 * rng.normal() * 0.5,
+				d[2] + 0.17 * rng.normal() * 0.5,
+			};
+			const double n = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+			samples.push_back(static_cast<float>(g * v[0] / n));
+			samples.push_back(static_cast<float>(g * v[1] / n));
+			samples.push_back(static_cast<float>(g * v[2] / n));
+		}
+	}
+	ErrorModel m;
+	TRUE_(fitErrorModel(samples.data(), 60, static_cast<float>(g), m));
+}
+
+void testSmallestEigenvalueOfKnownMatrices() {
+	using SlimeVR::Sensors::SoftFusion::detail::smallestEigenvalue3;
+	// Diagonal: the smallest entry.
+	const double diag[9] = {3, 0, 0, 0, 1, 0, 0, 0, 2};
+	NEAR(smallestEigenvalue3(diag), 1.0, 1e-9);
+	// Isotropic direction coverage gives 1/3 on every axis.
+	const double iso[9] = {1.0 / 3, 0, 0, 0, 1.0 / 3, 0, 0, 0, 1.0 / 3};
+	NEAR(smallestEigenvalue3(iso), 1.0 / 3.0, 1e-9);
+	// Coplanar directions: no variance out of plane.
+	const double planar[9] = {0.5, 0, 0, 0, 0.5, 0, 0, 0, 0};
+	NEAR(smallestEigenvalue3(planar), 0.0, 1e-9);
+	// Non-diagonal, known eigenvalues 1 and 3.
+	const double rot[9] = {2, 1, 0, 1, 2, 0, 0, 0, 2};
+	NEAR(smallestEigenvalue3(rot), 1.0, 1e-9);
 }
 
 }  // namespace
@@ -982,6 +1095,9 @@ int main() {
 	testFitIsNearIdentityForAPerfectSensor();
 	testFitRejectsInsufficientData();
 	testFitRejectsDegenerateOrientations();
+	testFitRejectsNearDegenerateCoverage();
+	testFitAcceptsSixPositionCoverage();
+	testSmallestEigenvalueOfKnownMatrices();
 
 	if (gFailures == 0) {
 		std::printf("selftest: %d checks passed\n", gChecks);
