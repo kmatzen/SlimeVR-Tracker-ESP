@@ -28,6 +28,7 @@
 #include "GlobalVars.h"
 #include "base64.hpp"
 #include "batterymonitor.h"
+#include "configuration/gyroscalecmd.h"
 #include "logging/Logger.h"
 #include "utils.h"
 
@@ -94,6 +95,142 @@ decode_base64_length_null(const char* const b64char, unsigned int* b64ssidlength
 	return decode_base64_length((unsigned char*)b64char, *b64ssidlength);
 }
 
+/**
+ * `SET GYROSCALE <sensorId> <x> <y> <z>` -- stores a measured gyroscope scale
+ * factor.
+ *
+ * Scale error is stable over the life of a part, unlike bias, so measuring it
+ * once and storing it is a reasonable shape. The measurement itself is done off
+ * the tracker: capture with `SET LOGRAW`, then run `fusion-bench gyro-scale` on
+ * the result and type the three numbers it prints back in here. Doing the
+ * estimation on-device would mean re-integrating every candidate scale over the
+ * whole capture, which is fine for a host tool and not for an MCU.
+ *
+ * `SET GYROSCALE <sensorId> RESET` restores unity without disturbing the bias
+ * calibration, which `DELCAL` would erase along with everything else.
+ */
+void cmdSetGyroScale(CmdParser* parser) {
+	using namespace SlimeVR::Configuration;
+
+	const bool reset
+		= parser->getParamCount() == 3 && parser->equalCmdParam(3, "RESET");
+	if (parser->getParamCount() < 5 && !reset) {
+		logger.error("CMD SET GYROSCALE ERROR: Too few arguments");
+		logger.info("Syntax: SET GYROSCALE <sensorId> <x> <y> <z>");
+		logger.info("        SET GYROSCALE <sensorId> RESET");
+		return;
+	}
+
+	const long sensorId = strtol(parser->getCmdParam(2), nullptr, 10);
+	if (sensorId < 0
+		|| static_cast<size_t>(sensorId) >= configuration.getSensorCount()) {
+		logger.error(
+			"CMD SET GYROSCALE ERROR: No calibration stored for sensor %ld (have %d)",
+			sensorId,
+			static_cast<int>(configuration.getSensorCount())
+		);
+		return;
+	}
+
+	float scale[3] = {1.0f, 1.0f, 1.0f};
+	if (!reset) {
+		const char* text[3] = {
+			parser->getCmdParam(3),
+			parser->getCmdParam(4),
+			parser->getCmdParam(5),
+		};
+		int badAxis = -1;
+		const GyroScaleStatus status = parseGyroScale(text, scale, badAxis);
+		static const char* axisName[3] = {"X", "Y", "Z"};
+		if (status == GyroScaleStatus::Unparseable) {
+			logger.error(
+				"CMD SET GYROSCALE ERROR: %s axis value '%s' is not a number",
+				axisName[badAxis],
+				text[badAxis] != nullptr ? text[badAxis] : ""
+			);
+			return;
+		}
+		if (status == GyroScaleStatus::OutOfRange) {
+			logger.error(
+				"CMD SET GYROSCALE ERROR: %s axis %.4f is outside %.2f..%.2f",
+				axisName[badAxis],
+				scale[badAxis],
+				kGyroScaleMin,
+				kGyroScaleMax
+			);
+			logger.info(
+				"A real gyroscope is within a few percent of unity; check for a "
+				"misplaced decimal point"
+			);
+			return;
+		}
+	}
+
+	SlimeVR::Configuration::SensorConfig config
+		= configuration.getSensor(static_cast<size_t>(sensorId));
+	if (config.type != SlimeVR::Configuration::SensorConfigType::RUNTIME_CALIBRATION) {
+		logger.error(
+			"CMD SET GYROSCALE ERROR: Sensor %ld does not use runtime calibration",
+			sensorId
+		);
+		return;
+	}
+
+	auto& cal = config.data.runtimeCalibration;
+	const bool discarded
+		= buildGyroScaleModel(scale, cal.errorModelValid, cal.A_M, cal.G_M);
+	cal.errorModelValid = true;
+
+	configuration.setSensor(static_cast<size_t>(sensorId), config);
+	configuration.save();
+
+	if (discarded) {
+		logger.warn(
+			"Previously fitted gyroscope misalignment terms were discarded; this "
+			"command stores a pure scale factor"
+		);
+	}
+	logger.info(
+		"CMD SET GYROSCALE OK: Sensor %ld scale set to %.4f %.4f %.4f",
+		sensorId,
+		scale[0],
+		scale[1],
+		scale[2]
+	);
+	logger.info("Reboot to apply -- the running fusion holds its own copy");
+}
+
+/// Prints the stored gyroscope scale for every sensor that has a calibration.
+void cmdGetGyroScale() {
+	const size_t count = configuration.getSensorCount();
+	if (count == 0) {
+		logger.info("No sensor calibrations stored");
+		return;
+	}
+	for (size_t i = 0; i < count; i++) {
+		SlimeVR::Configuration::SensorConfig config = configuration.getSensor(i);
+		if (config.type
+			!= SlimeVR::Configuration::SensorConfigType::RUNTIME_CALIBRATION) {
+			continue;
+		}
+		const auto& cal = config.data.runtimeCalibration;
+		if (!cal.errorModelValid) {
+			logger.info("Sensor[%d] gyro scale: 1.0000 1.0000 1.0000 (unset)", (int)i);
+			continue;
+		}
+		logger.info(
+			"Sensor[%d] gyro scale: %.4f %.4f %.4f%s",
+			(int)i,
+			cal.G_M[0],
+			cal.G_M[4],
+			cal.G_M[8],
+			SlimeVR::Configuration::gyroModelHasMisalignment(cal.G_M)
+				? " (+ misalignment)"
+				: ""
+		);
+	}
+}
+
 void cmdSet(CmdParser* parser) {
 	if (parser->getParamCount() != 1) {
 		if (parser->equalCmdParam(1, "WIFI")) {
@@ -158,6 +295,8 @@ void cmdSet(CmdParser* parser) {
 				wifiNetwork.setWiFiCredentials(ssid, ppass);
 				logger.info("CMD SET BWIFI OK: New wifi credentials set, reconnecting");
 			}
+		} else if (parser->equalCmdParam(1, "GYROSCALE")) {
+			cmdSetGyroScale(parser);
 		} else {
 			logger.error("CMD SET ERROR: Unrecognized variable to set");
 		}
@@ -248,6 +387,10 @@ String getEncryptionTypeName(uint8_t type) {
 void cmdGet(CmdParser* parser) {
 	if (parser->getParamCount() < 2) {
 		return;
+	}
+
+	if (parser->equalCmdParam(1, "GYROSCALE")) {
+		cmdGetGyroScale();
 	}
 
 	if (parser->equalCmdParam(1, "INFO")) {

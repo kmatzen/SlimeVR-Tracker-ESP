@@ -19,6 +19,7 @@
 
 // The sensor-hub FIFO assembler, compiled straight from the firmware tree. It
 // has no Arduino dependency precisely so it can be tested here.
+#include "../../../src/configuration/gyroscalecmd.h"
 #include "../../../src/sensors/softfusion/drivers/bmm350comp.h"
 #include "../../../src/sensors/softfusion/drivers/magfifo.h"
 #include "../../../src/sensors/softfusion/errormodel.h"
@@ -1216,6 +1217,174 @@ void testGyroScaleRefusesWithoutRestPeriods() {
 
 }  // namespace
 
+// ---------------------------------------------------------------------------
+// SET GYROSCALE serial command validation
+// ---------------------------------------------------------------------------
+
+void testGyroScaleArgParsing() {
+	using namespace SlimeVR::Configuration;
+	float v = 0;
+
+	TRUE_(parseGyroScaleValue("1.0", v));
+	NEAR(v, 1.0, 1e-9);
+	TRUE_(parseGyroScaleValue("0.9873", v));
+	NEAR(v, 0.9873, 1e-6);
+
+	// `atof` would return 0.0 for each of these and report no error, which is
+	// the exact failure this parse exists to close.
+	TRUE_(!parseGyroScaleValue("abc", v));
+	TRUE_(!parseGyroScaleValue("", v));
+	TRUE_(!parseGyroScaleValue(nullptr, v));
+	// Trailing garbage: a value that "looks right" but was mistyped.
+	TRUE_(!parseGyroScaleValue("1.0x", v));
+	TRUE_(!parseGyroScaleValue("nan", v));
+	TRUE_(!parseGyroScaleValue("inf", v));
+}
+
+void testGyroScaleRangeRejection() {
+	using namespace SlimeVR::Configuration;
+	float scale[3] = {0, 0, 0};
+	int bad = -1;
+
+	const char* good[3] = {"1.002", "0.9950", "1.0100"};
+	TRUE_(parseGyroScale(good, scale, bad) == GyroScaleStatus::Ok);
+	TRUE_(bad == -1);
+	NEAR(scale[0], 1.002, 1e-6);
+	NEAR(scale[2], 1.01, 1e-6);
+
+	// The misplaced decimal point. Accepting this would scale the gyroscope by
+	// ten and present as a hardware fault rather than a bad calibration.
+	const char* typo[3] = {"1.0", "10", "1.0"};
+	TRUE_(parseGyroScale(typo, scale, bad) == GyroScaleStatus::OutOfRange);
+	TRUE_(bad == 1);
+
+	// Zero would silence the axis entirely.
+	const char* zero[3] = {"0", "1.0", "1.0"};
+	TRUE_(parseGyroScale(zero, scale, bad) == GyroScaleStatus::OutOfRange);
+	TRUE_(bad == 0);
+
+	// Negative would invert it.
+	const char* negative[3] = {"1.0", "1.0", "-1.0"};
+	TRUE_(parseGyroScale(negative, scale, bad) == GyroScaleStatus::OutOfRange);
+	TRUE_(bad == 2);
+
+	// The bounds themselves are inclusive.
+	const char* edges[3] = {"0.90", "1.10", "1.0"};
+	TRUE_(parseGyroScale(edges, scale, bad) == GyroScaleStatus::Ok);
+
+	const char* justOver[3] = {"1.0", "1.0", "1.1001"};
+	TRUE_(parseGyroScale(justOver, scale, bad) == GyroScaleStatus::OutOfRange);
+	TRUE_(bad == 2);
+
+	// Unparseable is reported as such rather than being folded into range.
+	const char* junk[3] = {"1.0", "banana", "1.0"};
+	TRUE_(parseGyroScale(junk, scale, bad) == GyroScaleStatus::Unparseable);
+	TRUE_(bad == 1);
+}
+
+void testGyroScaleModelNormalisesAccelMatrix() {
+	using namespace SlimeVR::Configuration;
+	// The hazard this guards. A config that never had a model fitted carries an
+	// all-zero A_M. That is harmless while errorModelValid is false, because the
+	// loader substitutes identity -- but storing a gyroscope scale sets that
+	// flag, and the flag governs both matrices. Without normalisation the zero
+	// matrix goes live and multiplies every accelerometer sample to zero.
+	float aM[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+	float gM[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+	const float scale[3] = {1.01f, 0.99f, 1.0f};
+
+	const bool discarded = buildGyroScaleModel(scale, false, aM, gM);
+	TRUE_(!discarded);
+
+	NEAR(aM[0], 1.0, 1e-9);
+	NEAR(aM[4], 1.0, 1e-9);
+	NEAR(aM[8], 1.0, 1e-9);
+	NEAR(aM[1], 0.0, 1e-9);
+	NEAR(aM[5], 0.0, 1e-9);
+
+	NEAR(gM[0], 1.01, 1e-6);
+	NEAR(gM[4], 0.99, 1e-6);
+	NEAR(gM[8], 1.0, 1e-6);
+	NEAR(gM[1], 0.0, 1e-9);
+	NEAR(gM[3], 0.0, 1e-9);
+}
+
+void testGyroScaleModelPreservesFittedAccelMatrix() {
+	using namespace SlimeVR::Configuration;
+	// A previously fitted accelerometer model must survive a gyroscope-only
+	// update; the two are independent measurements.
+	float aM[9] = {1.02f, 0.01f, 0, -0.01f, 0.98f, 0, 0, 0, 1.01f};
+	float gM[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+	const float scale[3] = {1.005f, 1.0f, 0.995f};
+
+	buildGyroScaleModel(scale, true, aM, gM);
+
+	NEAR(aM[0], 1.02, 1e-6);
+	NEAR(aM[1], 0.01, 1e-6);
+	NEAR(aM[4], 0.98, 1e-6);
+	NEAR(aM[8], 1.01, 1e-6);
+	NEAR(gM[0], 1.005, 1e-6);
+	NEAR(gM[8], 0.995, 1e-6);
+}
+
+void testGyroScaleReportsDiscardedMisalignment() {
+	using namespace SlimeVR::Configuration;
+	// Overwriting a fitted gyroscope model with a pure diagonal loses its
+	// cross-axis terms. That is the intended semantic -- the estimator has
+	// nothing to say about misalignment -- but it must not happen silently.
+	float aM[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+	float withCross[9] = {1.01f, 0.02f, 0, -0.02f, 1.0f, 0, 0, 0, 1.0f};
+	TRUE_(gyroModelHasMisalignment(withCross));
+
+	const float scale[3] = {1.0f, 1.0f, 1.0f};
+	TRUE_(buildGyroScaleModel(scale, true, aM, withCross));
+	TRUE_(!gyroModelHasMisalignment(withCross));
+
+	// A pure diagonal has nothing to lose, so no warning is due.
+	float diagonal[9] = {1.01f, 0, 0, 0, 1.0f, 0, 0, 0, 1.0f};
+	TRUE_(!gyroModelHasMisalignment(diagonal));
+	TRUE_(!buildGyroScaleModel(scale, true, aM, diagonal));
+
+	// Neither does an unset one, even though it is not literally diagonal.
+	float unset[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+	TRUE_(!buildGyroScaleModel(scale, false, aM, unset));
+}
+
+void testGyroScaleModelIsActuallyApplied() {
+	using namespace SlimeVR::Configuration;
+	// applyErrorMatrix short-circuits two cases: an exact identity and an
+	// all-zero diagonal. A stored scale must fall into neither, or it would be
+	// written to flash, read back, and then silently ignored.
+	float aM[9] = {0};
+	float gM[9] = {0};
+	const float scale[3] = {1.013f, 0.994f, 1.001f};
+	buildGyroScaleModel(scale, false, aM, gM);
+
+	const bool unsetLike = gM[0] == 0.0f && gM[4] == 0.0f && gM[8] == 0.0f;
+	const bool identityLike = gM[0] == 1.0f && gM[4] == 1.0f && gM[8] == 1.0f;
+	TRUE_(!unsetLike);
+	TRUE_(!identityLike);
+
+	// And the arithmetic it will receive is a plain per-axis scaling.
+	const float in[3] = {2.0f, -3.0f, 0.5f};
+	float out[3];
+	out[0] = gM[0] * in[0] + gM[1] * in[1] + gM[2] * in[2];
+	out[1] = gM[3] * in[0] + gM[4] * in[1] + gM[5] * in[2];
+	out[2] = gM[6] * in[0] + gM[7] * in[1] + gM[8] * in[2];
+	NEAR(out[0], 2.0 * 1.013, 1e-5);
+	NEAR(out[1], -3.0 * 0.994, 1e-5);
+	NEAR(out[2], 0.5 * 1.001, 1e-5);
+
+	// Unity is the one case that *should* short-circuit: RESET must genuinely
+	// restore no-op behaviour, not merely a matrix that multiplies out to one.
+	const float unity[3] = {1.0f, 1.0f, 1.0f};
+	buildGyroScaleModel(unity, false, aM, gM);
+	const bool nowIdentity = gM[0] == 1.0f && gM[4] == 1.0f && gM[8] == 1.0f
+						  && gM[1] == 0.0f && gM[2] == 0.0f && gM[3] == 0.0f
+						  && gM[5] == 0.0f && gM[6] == 0.0f && gM[7] == 0.0f;
+	TRUE_(nowIdentity);
+}
+
 int main() {
 	testQuatBasics();
 	testIntegration();
@@ -1255,6 +1424,12 @@ int main() {
 	testGyroScaleRefusesWhenGravityNeverMoves();
 	testGyroScaleRefusesWithoutRestPeriods();
 	testSmallestEigenvalueOfKnownMatrices();
+	testGyroScaleArgParsing();
+	testGyroScaleRangeRejection();
+	testGyroScaleModelNormalisesAccelMatrix();
+	testGyroScaleModelPreservesFittedAccelMatrix();
+	testGyroScaleReportsDiscardedMisalignment();
+	testGyroScaleModelIsActuallyApplied();
 
 	if (gFailures == 0) {
 		std::printf("selftest: %d checks passed\n", gChecks);
