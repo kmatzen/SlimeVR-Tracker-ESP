@@ -441,6 +441,141 @@ fitErrorModel(const float* samples, size_t count, float norm, ErrorModel& out) {
 }
 
 /**
+ * The normal equations for the diagonal (bias + scale) fit, in streaming form.
+ *
+ * The batch fit builds these by summing one rank-1 update per sample and then
+ * solving. Nothing in that sum depends on the samples being available together,
+ * which is the whole reason on-device online estimation is possible at all: the
+ * accumulator *is* the recursive estimator. Twenty-seven numbers replace an
+ * unbounded sample history, and a tracker can keep learning across a session it
+ * has no room to record.
+ *
+ * `double` is not defensive here. The rows contain `x^2`, so `A'A` contains
+ * `x^4` -- around 9200 for a 1 g reading in m/s^2. Accumulate a few hundred
+ * thousand of those in `float` and the running sum crosses the point where
+ * adding one more changes nothing, and the estimate silently freezes. That
+ * failure is invisible: no overflow, no NaN, just an estimator that stops
+ * responding.
+ */
+struct DiagonalNormalEquations {
+	/// Symmetric 6x6, upper triangle packed by rows.
+	double ata[21] = {0};
+	double atb[6] = {0};
+	/// Effective sample count. Fractional once forgetting has been applied.
+	double weight = 0.0;
+
+	static constexpr int packedIndex(int i, int j) {
+		// Row-major upper triangle: row i starts after the rows above it.
+		return i * 6 - (i * (i - 1)) / 2 + (j - i);
+	}
+
+	/// Adds one sample, in the same units as the `norm` later passed to `solve`.
+	void add(const float sample[3], double sampleWeight = 1.0) {
+		const double x = sample[0];
+		const double y = sample[1];
+		const double z = sample[2];
+		const double row[6] = {x * x, y * y, z * z, -2 * x, -2 * y, -2 * z};
+		for (int i = 0; i < 6; i++) {
+			for (int j = i; j < 6; j++) {
+				ata[packedIndex(i, j)] += sampleWeight * row[i] * row[j];
+			}
+			atb[i] += sampleWeight * row[i];
+		}
+		weight += sampleWeight;
+	}
+
+	/**
+	 * Discounts everything accumulated so far by `factor`.
+	 *
+	 * Exponential forgetting, the standard recursive-least-squares device. It
+	 * matters because the two things being estimated do not age alike: scale
+	 * factor is a property of the part and stable over its life, while bias
+	 * drifts with temperature and time. Without forgetting, a reading taken
+	 * hours ago at a different temperature counts exactly as much as one taken
+	 * now, and the bias estimate is an average over conditions that no longer
+	 * hold rather than an estimate of the current one.
+	 */
+	void forget(double factor) {
+		for (double& v : ata) {
+			v *= factor;
+		}
+		for (double& v : atb) {
+			v *= factor;
+		}
+		weight *= factor;
+	}
+
+	void reset() { *this = DiagonalNormalEquations{}; }
+
+	/**
+	 * Solves for bias and scale.
+	 *
+	 * Returns false if the accumulated system is singular or implies a
+	 * non-physical sensor. Says nothing about whether the *coverage* was
+	 * adequate -- that is a separate question, asked separately, because a
+	 * well-conditioned solve on a badly covered sample set is exactly the
+	 * failure mode that looks like success.
+	 *
+	 * @param norm  Expected magnitude, e.g. gravity in m/s^2.
+	 */
+	[[nodiscard]] bool solve(float norm, ErrorModel& out) const {
+		if (!(norm > 0.0f) || weight <= 0.0) {
+			return false;
+		}
+
+		double full[36];
+		for (int i = 0; i < 6; i++) {
+			for (int j = i; j < 6; j++) {
+				const double v = ata[packedIndex(i, j)];
+				full[i * 6 + j] = v;
+				full[j * 6 + i] = v;
+			}
+		}
+		double rhs[6];
+		for (int i = 0; i < 6; i++) {
+			rhs[i] = atb[i];
+		}
+		if (!detail::solveLinear(full, rhs, 6)) {
+			return false;
+		}
+
+		const double a[3] = {rhs[0], rhs[1], rhs[2]};
+		const double c[3] = {rhs[3], rhs[4], rhs[5]};
+		for (const double v : a) {
+			// a_i is s_i^2 up to a positive factor. Non-positive means the fit
+			// did not find an ellipsoid, so there is no real scale to report.
+			if (!(v > 0.0)) {
+				return false;
+			}
+		}
+
+		const double b[3] = {c[0] / a[0], c[1] / a[1], c[2] / a[2]};
+
+		double sum = 0.0;
+		for (int i = 0; i < 3; i++) {
+			sum += a[i] * b[i] * b[i];
+		}
+		const double denom = 1.0 + sum;
+		if (std::fabs(denom) < 1e-12) {
+			return false;
+		}
+
+		for (int i = 0; i < 9; i++) {
+			out.m[i] = 0.0f;
+		}
+		for (int i = 0; i < 3; i++) {
+			const double scaleSquared = a[i] * static_cast<double>(norm) * norm / denom;
+			if (!(scaleSquared > 0.0)) {
+				return false;
+			}
+			out.m[i * 4] = static_cast<float>(std::sqrt(scaleSquared));
+			out.bias[i] = static_cast<float>(b[i]);
+		}
+		return true;
+	}
+};
+
+/**
  * Fits bias and per-axis scale only, leaving the matrix diagonal.
  *
  * This exists because of a fact about the six-position procedure that is easy
@@ -484,58 +619,11 @@ fitErrorModelDiagonal(const float* samples, size_t count, float norm, ErrorModel
 		return false;
 	}
 
-	// sum_i a_i x_i^2 - 2 sum_i c_i x_i = 1, six unknowns.
-	double ata[36] = {0};
-	double atb[6] = {0};
+	DiagonalNormalEquations normal;
 	for (size_t s = 0; s < count; s++) {
-		const double x = samples[s * 3 + 0];
-		const double y = samples[s * 3 + 1];
-		const double z = samples[s * 3 + 2];
-		const double row[6] = {x * x, y * y, z * z, -2 * x, -2 * y, -2 * z};
-		for (int i = 0; i < 6; i++) {
-			for (int j = 0; j < 6; j++) {
-				ata[i * 6 + j] += row[i] * row[j];
-			}
-			atb[i] += row[i];
-		}
+		normal.add(&samples[s * 3]);
 	}
-	if (!detail::solveLinear(ata, atb, 6)) {
-		return false;
-	}
-
-	const double a[3] = {atb[0], atb[1], atb[2]};
-	const double c[3] = {atb[3], atb[4], atb[5]};
-	for (int i = 0; i < 3; i++) {
-		// a_i is s_i^2 up to a positive factor. Non-positive means the fit did
-		// not find an ellipsoid, so there is no real scale factor to report.
-		if (!(a[i] > 0.0)) {
-			return false;
-		}
-	}
-
-	const double b[3] = {c[0] / a[0], c[1] / a[1], c[2] / a[2]};
-
-	double sum = 0.0;
-	for (int i = 0; i < 3; i++) {
-		sum += a[i] * b[i] * b[i];
-	}
-	const double denom = 1.0 + sum;
-	if (std::fabs(denom) < 1e-12) {
-		return false;
-	}
-
-	for (int i = 0; i < 9; i++) {
-		out.m[i] = 0.0f;
-	}
-	for (int i = 0; i < 3; i++) {
-		const double scaleSquared = a[i] * static_cast<double>(norm) * norm / denom;
-		if (!(scaleSquared > 0.0)) {
-			return false;
-		}
-		out.m[i * 4] = static_cast<float>(std::sqrt(scaleSquared));
-		out.bias[i] = static_cast<float>(b[i]);
-	}
-	return true;
+	return normal.solve(norm, out);
 }
 
 }  // namespace SlimeVR::Sensors::SoftFusion

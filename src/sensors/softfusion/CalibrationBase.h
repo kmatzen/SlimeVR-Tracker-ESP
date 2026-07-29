@@ -66,6 +66,7 @@ public:
 	virtual void checkStartupCalibration() {}
 	virtual void startCalibration(int calibrationType){};
 	virtual void cancelCalibration(){};
+	virtual void printOnlineEstimate(){};
 
 	virtual bool calibrationMatches(
 		const SlimeVR::Configuration::SensorConfig& sensorCalibration

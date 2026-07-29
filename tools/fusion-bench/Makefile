@@ -36,6 +36,7 @@ HEADERS   := $(wildcard src/*.h) $(VQF_DIR)/vqf.h \
              $(wildcard $(ROOT)/src/sensors/softfusion/drivers/bmm350comp.h) \
              $(wildcard $(ROOT)/src/sensors/softfusion/errormodel.h) \
              $(wildcard $(ROOT)/src/sensors/softfusion/sixposition.h) \
+             $(wildcard $(ROOT)/src/sensors/softfusion/onlineestimator.h) \
              $(wildcard $(ROOT)/src/configuration/gyroscalecmd.h) \
              $(wildcard $(ROOT)/src/configuration/accelmodel.h)
 

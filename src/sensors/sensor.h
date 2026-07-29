@@ -83,6 +83,8 @@ public:
 	// Only meaningful for a calibration that waits on the user -- the
 	// background ones have nothing to abandon.
 	virtual void cancelCalibration(){};
+	// Reports what continuous background estimation currently believes.
+	virtual void printOnlineEstimate(){};
 	virtual SensorStatus getSensorState();
 	virtual void printTemperatureCalibrationState();
 	virtual void printDebugTemperatureCalibrationState();
