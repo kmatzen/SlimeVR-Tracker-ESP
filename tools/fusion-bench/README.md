@@ -300,6 +300,65 @@ about one axis and is the better reference for a single axis. This is
 complementary: it needs no fixture, covers all three axes in one capture, and is
 something a user can actually be asked to do.
 
+#### Storing the result on the tracker
+
+The estimate is only useful once the tracker applies it. Type the three numbers
+from the `scale (multiply measured rate by this)` line back over the serial
+console:
+
+```
+SET GYROSCALE 0 0.97087 1.02041 0.98522
+```
+
+```
+[INFO ] CMD SET GYROSCALE OK: Sensor 0 scale set to 0.9709 1.0204 0.9852
+[INFO ] Reboot to apply -- the running fusion holds its own copy
+```
+
+The first argument is the sensor ID as printed by `GET INFO`. **Reboot after
+setting it** — the calibration is read once at sensor init, so the running
+fusion keeps its old copy until then.
+
+To read back what is stored:
+
+```
+GET GYROSCALE
+```
+
+To undo it without destroying anything else:
+
+```
+SET GYROSCALE 0 RESET
+```
+
+`RESET` restores unity. Use it rather than `DELCAL`, which erases the gyroscope
+and accelerometer *bias* calibration too — that is the part the tracker
+re-learns slowly at rest, and throwing it away costs far more than the scale
+factor is worth.
+
+**Why this is a one-off and bias is not.** Scale error is a property of the part
+that is stable over its life; bias drifts with temperature and age, which is why
+the firmware re-estimates it continuously at rest and why there is no equivalent
+`SET GYROBIAS`.
+
+**What it will refuse.** Values outside 0.90–1.10 are rejected, as is anything
+that is not a number:
+
+```
+[ERROR] CMD SET GYROSCALE ERROR: Y axis 10.0000 is outside 0.90..1.10
+[INFO ] A real gyroscope is within a few percent of unity; check for a misplaced decimal point
+```
+
+Those bounds are the same range the estimator searches, so a value outside them
+is not something it could have produced — it is a typo. This matters more than
+it sounds: a gyroscope scaled by ten does not look like a bad calibration, it
+looks like broken hardware, and the fix is not obvious once the tracker is
+reassembled.
+
+If the command reports `Sensor 0 does not use runtime calibration`, the board is
+using one of the older fixed calibration formats, which has no error-model
+matrix to write into.
+
 ### Test D — temperature ramp
 
 The firmware has temperature-gradient compensation and nothing currently proves
