@@ -199,6 +199,49 @@ inline double smallestEigenvalue3(const double a[9]) {
 	return q + 2.0 * p * std::cos(phi + twoPiOver3);
 }
 
+/**
+ * True if the sample directions span three dimensions well enough to fit.
+ *
+ * Directions rather than magnitudes, so a sensor with a large bias is not
+ * mistaken for poor coverage: it is where the sensor was *pointed* that
+ * determines whether the ellipsoid is observable.
+ *
+ * @param minUsed  Samples with a usable magnitude required, i.e. the number of
+ *                 unknowns the caller's fit has.
+ */
+inline bool spansThreeDimensions(
+	const float* samples,
+	size_t count,
+	size_t minUsed,
+	double minSpread
+) {
+	double cov[9] = {0};
+	size_t used = 0;
+	for (size_t i = 0; i < count; i++) {
+		const double x = samples[i * 3 + 0];
+		const double y = samples[i * 3 + 1];
+		const double z = samples[i * 3 + 2];
+		const double len = std::sqrt(x * x + y * y + z * z);
+		if (len < 1e-9) {
+			continue;
+		}
+		const double d[3] = {x / len, y / len, z / len};
+		for (int r = 0; r < 3; r++) {
+			for (int c = 0; c < 3; c++) {
+				cov[r * 3 + c] += d[r] * d[c];
+			}
+		}
+		used++;
+	}
+	if (used < minUsed) {
+		return false;
+	}
+	for (int i = 0; i < 9; i++) {
+		cov[i] /= static_cast<double>(used);
+	}
+	return smallestEigenvalue3(cov) >= minSpread;
+}
+
 }  // namespace detail
 
 /**
@@ -243,38 +286,8 @@ fitErrorModel(const float* samples, size_t count, float norm, ErrorModel& out) {
 	// plane, leave it near-singular. The solve still succeeds and returns a
 	// confidently wrong model, which is worse than no calibration at all
 	// because it is then applied to every subsequent sample.
-	//
-	// Directions rather than magnitudes, so a sensor with a large bias is not
-	// mistaken for poor coverage: it is where the sensor was *pointed* that
-	// determines whether the ellipsoid is observable.
-	{
-		double cov[9] = {0};
-		size_t used = 0;
-		for (size_t i = 0; i < count; i++) {
-			const double x = samples[i * 3 + 0];
-			const double y = samples[i * 3 + 1];
-			const double z = samples[i * 3 + 2];
-			const double len = std::sqrt(x * x + y * y + z * z);
-			if (len < 1e-9) {
-				continue;
-			}
-			const double d[3] = {x / len, y / len, z / len};
-			for (int r = 0; r < 3; r++) {
-				for (int c = 0; c < 3; c++) {
-					cov[r * 3 + c] += d[r] * d[c];
-				}
-			}
-			used++;
-		}
-		if (used < 9) {
-			return false;
-		}
-		for (int i = 0; i < 9; i++) {
-			cov[i] /= static_cast<double>(used);
-		}
-		if (detail::smallestEigenvalue3(cov) < kMinDirectionSpread) {
-			return false;
-		}
+	if (!detail::spansThreeDimensions(samples, count, 9, kMinDirectionSpread)) {
+		return false;
 	}
 
 	// Quadric: x'Qx + u'x = 1, nine unknowns after fixing the constant. Solving
@@ -364,6 +377,101 @@ fitErrorModel(const float* samples, size_t count, float norm, ErrorModel& out) {
 	out.bias[0] = static_cast<float>(b[0]);
 	out.bias[1] = static_cast<float>(b[1]);
 	out.bias[2] = static_cast<float>(b[2]);
+	return true;
+}
+
+/**
+ * Fits bias and per-axis scale only, leaving the matrix diagonal.
+ *
+ * This exists because of a fact about the six-position procedure that is easy
+ * to state and easy to miss: **six perfectly executed axis-aligned positions
+ * carry no information about misalignment at all.**
+ *
+ * The full quadric's design matrix has columns for `xy`, `xz` and `yz`. Hold
+ * the sensor with exactly one axis vertical and the other two read zero, so
+ * every one of those products is zero, and all three columns vanish. The
+ * solve is then singular -- not merely ill-conditioned. What rescues it in
+ * practice is hand-placement error, which means the misalignment terms a
+ * six-position fit reports are estimated from how badly the user held the
+ * tracker. That is not a measurement, and cross-axis terms fitted from noise
+ * are the most damaging possible kind of error to invent: they turn pitch and
+ * roll into spurious yaw, the unobservable axis on a 6-DoF tracker.
+ *
+ * So the guided on-device flow fits what six positions genuinely determine --
+ * bias and scale, six unknowns from six distinct orientations, well conditioned
+ * -- and declines to guess the rest. Misalignment remains available through the
+ * host path (`SET LOGRAW` plus `fusion-bench`), where a capture can cover
+ * orientations off the axes and the cross terms are actually observable.
+ *
+ * The algebra is the same trick as the full fit. A stationary accelerometer
+ * satisfies `sum_i s_i^2 (x_i - b_i)^2 = norm^2`; expanding gives a linear
+ * system in `s_i^2` and `s_i^2 b_i` once the constant is normalised away, and
+ * the overall scale that normalisation discards is recovered afterwards.
+ *
+ * @param samples  `3 * count` floats, xyz per sample, in raw scaled units.
+ * @param count    Number of samples. At least 6.
+ * @param norm     Expected magnitude, e.g. gravity in m/s^2.
+ */
+inline bool
+fitErrorModelDiagonal(const float* samples, size_t count, float norm, ErrorModel& out) {
+	if (count < 6 || norm <= 0.0f) {
+		return false;
+	}
+	if (!detail::spansThreeDimensions(samples, count, 6, kMinDirectionSpread)) {
+		return false;
+	}
+
+	// sum_i a_i x_i^2 - 2 sum_i c_i x_i = 1, six unknowns.
+	double ata[36] = {0};
+	double atb[6] = {0};
+	for (size_t s = 0; s < count; s++) {
+		const double x = samples[s * 3 + 0];
+		const double y = samples[s * 3 + 1];
+		const double z = samples[s * 3 + 2];
+		const double row[6] = {x * x, y * y, z * z, -2 * x, -2 * y, -2 * z};
+		for (int i = 0; i < 6; i++) {
+			for (int j = 0; j < 6; j++) {
+				ata[i * 6 + j] += row[i] * row[j];
+			}
+			atb[i] += row[i];
+		}
+	}
+	if (!detail::solveLinear(ata, atb, 6)) {
+		return false;
+	}
+
+	const double a[3] = {atb[0], atb[1], atb[2]};
+	const double c[3] = {atb[3], atb[4], atb[5]};
+	for (int i = 0; i < 3; i++) {
+		// a_i is s_i^2 up to a positive factor. Non-positive means the fit did
+		// not find an ellipsoid, so there is no real scale factor to report.
+		if (!(a[i] > 0.0)) {
+			return false;
+		}
+	}
+
+	const double b[3] = {c[0] / a[0], c[1] / a[1], c[2] / a[2]};
+
+	double sum = 0.0;
+	for (int i = 0; i < 3; i++) {
+		sum += a[i] * b[i] * b[i];
+	}
+	const double denom = 1.0 + sum;
+	if (std::fabs(denom) < 1e-12) {
+		return false;
+	}
+
+	for (int i = 0; i < 9; i++) {
+		out.m[i] = 0.0f;
+	}
+	for (int i = 0; i < 3; i++) {
+		const double scaleSquared = a[i] * static_cast<double>(norm) * norm / denom;
+		if (!(scaleSquared > 0.0)) {
+			return false;
+		}
+		out.m[i * 4] = static_cast<float>(std::sqrt(scaleSquared));
+		out.bias[i] = static_cast<float>(b[i]);
+	}
 	return true;
 }
 

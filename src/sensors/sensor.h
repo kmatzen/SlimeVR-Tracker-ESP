@@ -80,6 +80,9 @@ public:
 	virtual void setAcceleration(Vector3 a);
 	virtual void setFusedRotation(Quat r);
 	virtual void startCalibration(int calibrationType){};
+	// Only meaningful for a calibration that waits on the user -- the
+	// background ones have nothing to abandon.
+	virtual void cancelCalibration(){};
 	virtual SensorStatus getSensorState();
 	virtual void printTemperatureCalibrationState();
 	virtual void printDebugTemperatureCalibrationState();

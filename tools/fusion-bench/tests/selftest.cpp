@@ -19,10 +19,12 @@
 
 // The sensor-hub FIFO assembler, compiled straight from the firmware tree. It
 // has no Arduino dependency precisely so it can be tested here.
+#include "../../../src/configuration/accelmodel.h"
 #include "../../../src/configuration/gyroscalecmd.h"
 #include "../../../src/sensors/softfusion/drivers/bmm350comp.h"
 #include "../../../src/sensors/softfusion/drivers/magfifo.h"
 #include "../../../src/sensors/softfusion/errormodel.h"
+#include "../../../src/sensors/softfusion/sixposition.h"
 
 using namespace fb;
 
@@ -1385,6 +1387,744 @@ void testGyroScaleModelIsActuallyApplied() {
 	TRUE_(nowIdentity);
 }
 
+// ---------------------------------------------------------------------------
+// Guided six-position accelerometer calibration.
+// ---------------------------------------------------------------------------
+
+using SlimeVR::Sensors::SoftFusion::kBlocksPerPosition;
+using SlimeVR::Sensors::SoftFusion::kDwellSamples;
+using SlimeVR::Sensors::SoftFusion::kSamplesPerBlock;
+using SlimeVR::Sensors::SoftFusion::kSixPositionCount;
+using SlimeVR::Sensors::SoftFusion::SixPositionCollector;
+using SlimeVR::Sensors::SoftFusion::SixPositionEvent;
+
+constexpr double kG = 9.80665;
+
+/// Samples needed to take one position from "just arrived" to captured.
+constexpr size_t kSamplesPerPosition
+	= kDwellSamples + kBlocksPerPosition * kSamplesPerBlock;
+
+struct HoldTally {
+	int started = 0;
+	int captured = 0;
+	int disturbed = 0;
+	bool complete = false;
+};
+
+/// The raw reading a corrupted sensor gives when held in `position`.
+static void rawForPosition(
+	int position,
+	const double gain[3],
+	double crossXY,
+	const double bias[3],
+	float out[3]
+) {
+	double truth[3] = {0, 0, 0};
+	truth[position / 2] = (position % 2 == 0) ? kG : -kG;
+	corrupt(truth, gain, crossXY, bias, out);
+}
+
+static void feedN(
+	SixPositionCollector& c,
+	const float accel[3],
+	bool atRest,
+	size_t n,
+	HoldTally& tally
+) {
+	for (size_t i = 0; i < n; i++) {
+		switch (c.feed(accel, atRest, static_cast<float>(kG))) {
+			case SixPositionEvent::Started:
+				tally.started++;
+				break;
+			case SixPositionEvent::Captured:
+				tally.captured++;
+				break;
+			case SixPositionEvent::Complete:
+				tally.captured++;
+				tally.complete = true;
+				break;
+			case SixPositionEvent::Disturbed:
+				tally.disturbed++;
+				break;
+			case SixPositionEvent::None:
+				break;
+		}
+	}
+}
+
+void testSixPositionClassifiesAxes() {
+	const float g = static_cast<float>(kG);
+
+	// Each axis up and down lands on its own bin, in the documented order.
+	const float axes[6][3] = {
+		{g, 0, 0},
+		{-g, 0, 0},
+		{0, g, 0},
+		{0, -g, 0},
+		{0, 0, g},
+		{0, 0, -g},
+	};
+	for (int i = 0; i < 6; i++) {
+		TRUE_(SixPositionCollector::classify(axes[i], g) == i);
+	}
+
+	// Held 15 degrees off: still the same position, because a user cannot do
+	// better than this by hand and the fit does not need them to.
+	const float tilted[3] = {
+		static_cast<float>(kG * std::cos(deg2rad(15.0))),
+		static_cast<float>(kG * std::sin(deg2rad(15.0))),
+		0,
+	};
+	TRUE_(SixPositionCollector::classify(tilted, g) == 0);
+
+	// Held 25 degrees off: past tolerance, so the user is told rather than
+	// silently given a worse calibration.
+	const float sloppy[3] = {
+		static_cast<float>(kG * std::cos(deg2rad(25.0))),
+		static_cast<float>(kG * std::sin(deg2rad(25.0))),
+		0,
+	};
+	TRUE_(SixPositionCollector::classify(sloppy, g) < 0);
+
+	// Halfway between two axes is not a position at all.
+	const float diagonal[3] = {g * 0.7071f, 0, g * 0.7071f};
+	TRUE_(SixPositionCollector::classify(diagonal, g) < 0);
+
+	// Magnitude far from gravity: a steady reading that is not gravity.
+	const float weak[3] = {g * 0.5f, 0, 0};
+	const float strong[3] = {g * 1.5f, 0, 0};
+	const float zero[3] = {0, 0, 0};
+	TRUE_(SixPositionCollector::classify(weak, g) < 0);
+	TRUE_(SixPositionCollector::classify(strong, g) < 0);
+	TRUE_(SixPositionCollector::classify(zero, g) < 0);
+}
+
+void testSixPositionCapturesAndFits() {
+	// The headline: turn a tracker through six positions and the error it was
+	// built with comes back out.
+	const double gain[3] = {1.03, 0.97, 1.01};
+	const double bias[3] = {0.12, -0.08, 0.05};
+	constexpr double crossXY = 0.0;
+
+	SixPositionCollector c;
+	c.begin();
+	TRUE_(c.isRunning());
+	TRUE_(c.nextPosition() == 0);
+
+	HoldTally tally;
+	for (int p = 0; p < 6; p++) {
+		float raw[3];
+		rawForPosition(p, gain, crossXY, bias, raw);
+		feedN(c, raw, true, kSamplesPerPosition, tally);
+	}
+
+	TRUE_(tally.complete);
+	TRUE_(tally.started == 6);
+	TRUE_(tally.captured == 6);
+	TRUE_(tally.disturbed == 0);
+	TRUE_(c.capturedCount() == kSixPositionCount);
+	TRUE_(c.capturedMask() == 0x3F);
+	TRUE_(c.nextPosition() == -1);
+	TRUE_(!c.isRunning());
+
+	ErrorModel fitted;
+	TRUE_(c.fit(static_cast<float>(kG), fitted));
+
+	NEAR(fitted.bias[0], bias[0], 1e-3);
+	NEAR(fitted.bias[1], bias[1], 1e-3);
+	NEAR(fitted.bias[2], bias[2], 1e-3);
+	NEAR(fitted.m[0], gain[0], 1e-3);
+	NEAR(fitted.m[4], gain[1], 1e-3);
+	NEAR(fitted.m[8], gain[2], 1e-3);
+
+	// Off-diagonal terms are exactly zero: this fit does not guess at
+	// misalignment, and inventing cross-axis coupling would be worse than
+	// leaving it alone.
+	const int offDiagonal[6] = {1, 2, 3, 5, 6, 7};
+	for (const int i : offDiagonal) {
+		NEAR(fitted.m[i], 0.0, 0.0);
+	}
+
+	// Behavioural check on directions the procedure never visited: a corrected
+	// reading must have magnitude g wherever the sensor points.
+	std::vector<std::array<double, 3>> dirs;
+	sphereDirections(dirs, 100);
+	double worst = 0;
+	double worstRaw = 0;
+	for (const auto& d : dirs) {
+		const double t[3] = {d[0] * kG, d[1] * kG, d[2] * kG};
+		float raw[3];
+		corrupt(t, gain, crossXY, bias, raw);
+		float cor[3];
+		fitted.apply(raw, cor);
+		worst = std::max(
+			worst,
+			std::fabs(
+				std::sqrt(cor[0] * cor[0] + cor[1] * cor[1] + cor[2] * cor[2]) - kG
+			)
+		);
+		worstRaw = std::max(
+			worstRaw,
+			std::fabs(
+				std::sqrt(raw[0] * raw[0] + raw[1] * raw[1] + raw[2] * raw[2]) - kG
+			)
+		);
+	}
+	TRUE_(worstRaw > 0.2);
+	TRUE_(worst < 0.01);
+}
+
+void testSixPositionFullFitIsSingularOnPerfectPositions() {
+	// The reason the guided flow fits a diagonal. Six exactly axis-aligned
+	// positions zero every cross-product column of the full quadric, so the
+	// misalignment terms are not merely noisy, they are undetermined -- and the
+	// full solve says so by failing outright.
+	//
+	// Without this, "six positions determines bias, scale and misalignment"
+	// reads as true, and the on-device fit would be reporting how badly the
+	// tracker was held as though it were a property of the part.
+	const double gain[3] = {1.03, 0.97, 1.01};
+	const double bias[3] = {0.12, -0.08, 0.05};
+
+	std::vector<float> samples;
+	for (int rep = 0; rep < 4; rep++) {
+		for (int p = 0; p < 6; p++) {
+			float raw[3];
+			rawForPosition(p, gain, 0.0, bias, raw);
+			samples.push_back(raw[0]);
+			samples.push_back(raw[1]);
+			samples.push_back(raw[2]);
+		}
+	}
+
+	ErrorModel full;
+	TRUE_(!fitErrorModel(samples.data(), 24, static_cast<float>(kG), full));
+
+	// The diagonal fit takes the same data and succeeds.
+	ErrorModel diagonal;
+	TRUE_(fitErrorModelDiagonal(samples.data(), 24, static_cast<float>(kG), diagonal));
+	NEAR(diagonal.m[0], gain[0], 1e-4);
+	NEAR(diagonal.bias[2], bias[2], 1e-4);
+}
+
+void testDiagonalFitHelpsEvenWhenTheSensorIsMisaligned() {
+	// The obvious worry about fitting a diagonal: real sensors do have
+	// cross-axis coupling, so what does a correction that cannot represent it
+	// do to one? It could plausibly bend the scale factors to soak up the
+	// misalignment and come out worse than doing nothing.
+	//
+	// It does not. With 2% cross-coupling on top of 3% scale error, the
+	// diagonal fit removes the terms it can model and leaves the one it cannot,
+	// which is a large net improvement. That is what makes declining to guess
+	// at misalignment a safe default rather than a compromise.
+	constexpr double crossXY = 0.02;
+	const double gain[3] = {1.03, 0.97, 1.01};
+	const double bias[3] = {0.12, -0.08, 0.05};
+
+	std::vector<float> samples;
+	for (int rep = 0; rep < 4; rep++) {
+		for (int p = 0; p < 6; p++) {
+			float raw[3];
+			rawForPosition(p, gain, crossXY, bias, raw);
+			samples.push_back(raw[0]);
+			samples.push_back(raw[1]);
+			samples.push_back(raw[2]);
+		}
+	}
+
+	ErrorModel fitted;
+	TRUE_(fitErrorModelDiagonal(samples.data(), 24, static_cast<float>(kG), fitted));
+	TRUE_(
+		SlimeVR::Configuration::checkAccelModel(fitted, static_cast<float>(kG))
+		== SlimeVR::Configuration::AccelModelStatus::Ok
+	);
+
+	std::vector<std::array<double, 3>> dirs;
+	sphereDirections(dirs, 100);
+	double worst = 0;
+	double worstRaw = 0;
+	for (const auto& d : dirs) {
+		const double t[3] = {d[0] * kG, d[1] * kG, d[2] * kG};
+		float raw[3];
+		corrupt(t, gain, crossXY, bias, raw);
+		float cor[3];
+		fitted.apply(raw, cor);
+		worst = std::max(
+			worst,
+			std::fabs(
+				std::sqrt(cor[0] * cor[0] + cor[1] * cor[1] + cor[2] * cor[2]) - kG
+			)
+		);
+		worstRaw = std::max(
+			worstRaw,
+			std::fabs(
+				std::sqrt(raw[0] * raw[0] + raw[1] * raw[1] + raw[2] * raw[2]) - kG
+			)
+		);
+	}
+	// Strictly better, and by a wide margin rather than marginally.
+	TRUE_(worst < worstRaw / 4.0);
+}
+
+void testDiagonalFitIsUnityForAPerfectSensor() {
+	// A sensor with no error must come back as identity, or the calibration
+	// would be manufacturing a correction out of nothing.
+	std::vector<float> samples;
+	for (int rep = 0; rep < 4; rep++) {
+		for (int p = 0; p < 6; p++) {
+			float raw[3] = {0, 0, 0};
+			raw[p / 2] = static_cast<float>((p % 2 == 0) ? kG : -kG);
+			samples.push_back(raw[0]);
+			samples.push_back(raw[1]);
+			samples.push_back(raw[2]);
+		}
+	}
+	ErrorModel m;
+	TRUE_(fitErrorModelDiagonal(samples.data(), 24, static_cast<float>(kG), m));
+	TRUE_(m.isIdentity());
+}
+
+void testDiagonalFitRejectsPoorCoverage() {
+	// Five positions plus a repeat is not six orientations. The spread check
+	// has to notice, because the solve alone would not.
+	const int positions[6] = {0, 1, 2, 3, 4, 4};
+	std::vector<float> samples;
+	for (int rep = 0; rep < 4; rep++) {
+		for (const int p : positions) {
+			float raw[3] = {0, 0, 0};
+			raw[p / 2] = static_cast<float>((p % 2 == 0) ? kG : -kG);
+			samples.push_back(raw[0]);
+			samples.push_back(raw[1]);
+			samples.push_back(raw[2]);
+		}
+	}
+	ErrorModel m;
+	// Five distinct axes still span three dimensions, so this one is admitted
+	// -- the missing -Z is recoverable from the +Z data plus the constraint.
+	TRUE_(fitErrorModelDiagonal(samples.data(), 24, static_cast<float>(kG), m));
+
+	// A set confined to one plane is not.
+	std::vector<float> planar;
+	for (int rep = 0; rep < 8; rep++) {
+		for (int p = 0; p < 4; p++) {
+			float raw[3] = {0, 0, 0};
+			raw[p / 2] = static_cast<float>((p % 2 == 0) ? kG : -kG);
+			planar.push_back(raw[0]);
+			planar.push_back(raw[1]);
+			planar.push_back(raw[2]);
+		}
+	}
+	TRUE_(!fitErrorModelDiagonal(planar.data(), 32, static_cast<float>(kG), m));
+
+	// And too few samples is refused before anything else happens.
+	TRUE_(!fitErrorModelDiagonal(planar.data(), 5, static_cast<float>(kG), m));
+}
+
+/// Four in-plane positions plus an antipodal pair lifted `elevationDeg` out of
+/// the XY plane -- a set whose out-of-plane coverage can be dialled from
+/// "barely there" to "the full six positions" at 90 degrees.
+///
+/// `noise` is added per stored sample, standing in for what survives averaging
+/// a block of raw readings.
+static void thinCoverageSamples(
+	double elevationDeg,
+	const double gain[3],
+	const double bias[3],
+	double noise,
+	uint64_t seed,
+	std::vector<float>& out
+) {
+	const double c = std::cos(deg2rad(elevationDeg));
+	const double s = std::sin(deg2rad(elevationDeg));
+	const double dirs[6][3] = {
+		{1, 0, 0},
+		{-1, 0, 0},
+		{0, 1, 0},
+		{0, -1, 0},
+		{c, 0, s},
+		{-c, 0, -s},
+	};
+	Rng rng(seed);
+	out.clear();
+	for (int rep = 0; rep < 4; rep++) {
+		for (const auto& d : dirs) {
+			const double t[3] = {d[0] * kG, d[1] * kG, d[2] * kG};
+			float raw[3];
+			corrupt(t, gain, 0.0, bias, raw);
+			for (int k = 0; k < 3; k++) {
+				out.push_back(raw[k] + static_cast<float>(noise * rng.normal()));
+			}
+		}
+	}
+}
+
+void testDiagonalFitRejectsMarginalCoverage() {
+	// The case that distinguishes "the spread check works" from "the solve
+	// happens to fail". The obvious degenerate sets -- coplanar, or clustered
+	// -- are refused by the solve going singular whether or not the check
+	// exists, so they prove nothing about it.
+	//
+	// What the check is actually protecting against turned out not to be
+	// singularity at all. Given noiseless samples, four in-plane positions plus
+	// a pair lifted only 20 degrees out of plane fits *exactly* -- every
+	// unknown is determined and the answer is right to the last digit. The
+	// damage is noise amplification: with 0.02 m/s^2 of noise surviving the
+	// block average, that same geometry inflates the worst Z-scale error from
+	// 0.23% at full coverage to 3.3%, which is larger than the scale error the
+	// calibration exists to remove. Thin coverage does not fail loudly, it
+	// quietly makes the tracker worse.
+	const double gain[3] = {1.03, 0.97, 1.01};
+	const double bias[3] = {0.12, -0.08, 0.05};
+
+	std::vector<float> thin;
+	thinCoverageSamples(20.0, gain, bias, 0.0, 1, thin);
+	ErrorModel m;
+	TRUE_(!fitErrorModelDiagonal(thin.data(), 24, static_cast<float>(kG), m));
+
+	// Lift the same pair to 35 degrees and the set is admitted -- and with
+	// clean data it is accurate. Without this half the test would only show the
+	// check refusing everything.
+	std::vector<float> adequate;
+	thinCoverageSamples(35.0, gain, bias, 0.0, 1, adequate);
+	ErrorModel fitted;
+	TRUE_(fitErrorModelDiagonal(adequate.data(), 24, static_cast<float>(kG), fitted));
+	NEAR(fitted.m[0], gain[0], 1e-3);
+	NEAR(fitted.m[4], gain[1], 1e-3);
+	NEAR(fitted.m[8], gain[2], 1e-3);
+	NEAR(fitted.bias[2], bias[2], 1e-3);
+
+	// And the amplification itself, measured between two sets the check both
+	// accepts: the axis with the least coverage is the axis noise hurts most.
+	// This is the trend the threshold is placed against, so it is worth an
+	// assertion rather than only a comment.
+	constexpr double noise = 0.02;
+	double worstThin = 0;
+	double worstFull = 0;
+	for (uint64_t seed = 1; seed <= 40; seed++) {
+		std::vector<float> a;
+		std::vector<float> b;
+		thinCoverageSamples(35.0, gain, bias, noise, seed, a);
+		thinCoverageSamples(90.0, gain, bias, noise, seed, b);
+		ErrorModel ma;
+		ErrorModel mb;
+		TRUE_(fitErrorModelDiagonal(a.data(), 24, static_cast<float>(kG), ma));
+		TRUE_(fitErrorModelDiagonal(b.data(), 24, static_cast<float>(kG), mb));
+		worstThin = std::max(worstThin, std::fabs(ma.m[8] - gain[2]));
+		worstFull = std::max(worstFull, std::fabs(mb.m[8] - gain[2]));
+	}
+	TRUE_(worstThin > 2.0 * worstFull);
+	// Full six-position coverage keeps the same noise well under the error
+	// being corrected, which is the whole reason the procedure is six
+	// positions and not four.
+	TRUE_(worstFull < 0.005);
+}
+
+void testSixPositionRequiresRest() {
+	// Rest detection is the difference between "held still in a position" and
+	// "waved past one". Without it a capture would average motion.
+	const double unityGain[3] = {1, 1, 1};
+	const double noBias[3] = {0, 0, 0};
+
+	SixPositionCollector c;
+	c.begin();
+	HoldTally tally;
+	for (int p = 0; p < 6; p++) {
+		float raw[3];
+		rawForPosition(p, unityGain, 0.0, noBias, raw);
+		feedN(c, raw, false, kSamplesPerPosition * 2, tally);
+	}
+	TRUE_(tally.started == 0);
+	TRUE_(tally.captured == 0);
+	TRUE_(c.capturedCount() == 0);
+	TRUE_(c.isRunning());
+}
+
+void testSixPositionRetriesAfterMovement() {
+	const double unityGain[3] = {1, 1, 1};
+	const double noBias[3] = {0, 0, 0};
+	float raw[3];
+	rawForPosition(0, unityGain, 0.0, noBias, raw);
+
+	SixPositionCollector c;
+	c.begin();
+	HoldTally tally;
+
+	// Settle in, start capturing, then move before the position is finished.
+	feedN(c, raw, true, kDwellSamples + kSamplesPerBlock, tally);
+	TRUE_(tally.started == 1);
+	TRUE_(c.activePosition() == 0);
+	feedN(c, raw, false, 1, tally);
+	TRUE_(tally.disturbed == 1);
+	TRUE_(tally.captured == 0);
+	TRUE_(c.capturedCount() == 0);
+	TRUE_(c.activePosition() == -1);
+
+	// The partial capture is discarded rather than resumed: hold it properly
+	// and the full sample count is required again.
+	feedN(c, raw, true, kSamplesPerPosition - 1, tally);
+	TRUE_(tally.captured == 0);
+	feedN(c, raw, true, 1, tally);
+	TRUE_(tally.captured == 1);
+	TRUE_(c.capturedCount() == 1);
+}
+
+void testSixPositionWillNotCaptureTwiceWithoutMoving() {
+	// A tracker left sitting in one position must not fill the procedure with
+	// six copies of the same orientation -- which would fit nothing, and would
+	// do it confidently.
+	const double unityGain[3] = {1, 1, 1};
+	const double noBias[3] = {0, 0, 0};
+	float raw[3];
+	rawForPosition(4, unityGain, 0.0, noBias, raw);
+
+	SixPositionCollector c;
+	c.begin();
+	HoldTally tally;
+	feedN(c, raw, true, kSamplesPerPosition * 8, tally);
+
+	TRUE_(tally.captured == 1);
+	TRUE_(c.capturedCount() == 1);
+	TRUE_(c.capturedMask() == (1u << 4));
+	TRUE_(c.nextPosition() == 0);
+	TRUE_(!tally.complete);
+}
+
+void testSixPositionDwellRejectsBriefTouches() {
+	// The dwell requirement, exercised at its boundary: one sample short of it
+	// nothing starts, one sample later it does. A capture that began the
+	// instant a reading looked right would start while a hand is still moving.
+	const double unityGain[3] = {1, 1, 1};
+	const double noBias[3] = {0, 0, 0};
+	float raw[3];
+	rawForPosition(2, unityGain, 0.0, noBias, raw);
+
+	SixPositionCollector c;
+	c.begin();
+	HoldTally tally;
+	feedN(c, raw, true, kDwellSamples - 1, tally);
+	TRUE_(tally.started == 0);
+	feedN(c, raw, true, 1, tally);
+	TRUE_(tally.started == 1);
+
+	// Repeated brief touches never accumulate: the dwell counter restarts every
+	// time the tracker leaves the position.
+	SixPositionCollector brief;
+	brief.begin();
+	HoldTally briefTally;
+	const float away[3] = {0, 0, 0};
+	for (int i = 0; i < 40; i++) {
+		feedN(brief, raw, true, kDwellSamples - 1, briefTally);
+		feedN(brief, away, true, 1, briefTally);
+	}
+	TRUE_(briefTally.started == 0);
+	TRUE_(brief.capturedCount() == 0);
+}
+
+void testSixPositionRejectsSloppyHolds() {
+	// Held 35 degrees off every axis, the procedure refuses to advance rather
+	// than quietly producing a worse calibration.
+	SixPositionCollector c;
+	c.begin();
+	HoldTally tally;
+	for (int p = 0; p < 6; p++) {
+		float raw[3] = {0, 0, 0};
+		const int axis = p / 2;
+		const double sign = (p % 2 == 0) ? 1.0 : -1.0;
+		raw[axis] = static_cast<float>(sign * kG * std::cos(deg2rad(35.0)));
+		raw[(axis + 1) % 3] = static_cast<float>(kG * std::sin(deg2rad(35.0)));
+		feedN(c, raw, true, kSamplesPerPosition * 2, tally);
+	}
+	TRUE_(tally.started == 0);
+	TRUE_(c.capturedCount() == 0);
+}
+
+void testSixPositionAbortAndRestartAreClean() {
+	const double unityGain[3] = {1, 1, 1};
+	const double noBias[3] = {0, 0, 0};
+	float raw[3];
+	rawForPosition(0, unityGain, 0.0, noBias, raw);
+
+	SixPositionCollector c;
+	c.begin();
+	HoldTally tally;
+	feedN(c, raw, true, kSamplesPerPosition, tally);
+	TRUE_(c.capturedCount() == 1);
+
+	// Aborting stops it consuming samples at all.
+	c.abort();
+	TRUE_(!c.isRunning());
+	const int before = tally.started;
+	rawForPosition(2, unityGain, 0.0, noBias, raw);
+	feedN(c, raw, true, kSamplesPerPosition, tally);
+	TRUE_(tally.started == before);
+
+	// Restarting discards the earlier progress rather than resuming it, so a
+	// half-finished session cannot be mixed with a later one.
+	c.begin();
+	TRUE_(c.capturedCount() == 0);
+	TRUE_(c.capturedMask() == 0);
+	TRUE_(c.nextPosition() == 0);
+}
+
+void testAccelModelBoundsRejectImplausibleFits() {
+	using namespace SlimeVR::Configuration;
+	const float g = static_cast<float>(kG);
+
+	ErrorModel ok;
+	ok.m[0] = 1.02f;
+	ok.m[4] = 0.98f;
+	ok.m[8] = 1.0f;
+	ok.bias[0] = 0.2f;
+	TRUE_(checkAccelModel(ok, g) == AccelModelStatus::Ok);
+
+	// A scale factor no accelerometer has: this is a failed measurement, not a
+	// badly calibrated part, and applying it would look like a hardware fault.
+	ErrorModel bigScale = ok;
+	bigScale.m[4] = 1.4f;
+	TRUE_(checkAccelModel(bigScale, g) == AccelModelStatus::ScaleOutOfRange);
+
+	ErrorModel tinyScale = ok;
+	tinyScale.m[8] = 0.4f;
+	TRUE_(checkAccelModel(tinyScale, g) == AccelModelStatus::ScaleOutOfRange);
+
+	ErrorModel skewed = ok;
+	skewed.m[1] = 0.3f;
+	TRUE_(checkAccelModel(skewed, g) == AccelModelStatus::MisalignmentOutOfRange);
+
+	ErrorModel drifted = ok;
+	drifted.bias[2] = 4.0f;
+	TRUE_(checkAccelModel(drifted, g) == AccelModelStatus::BiasOutOfRange);
+
+	ErrorModel diverged = ok;
+	diverged.m[0] = std::numeric_limits<float>::quiet_NaN();
+	TRUE_(checkAccelModel(diverged, g) == AccelModelStatus::NotFinite);
+
+	ErrorModel infinite = ok;
+	infinite.bias[1] = std::numeric_limits<float>::infinity();
+	TRUE_(checkAccelModel(infinite, g) == AccelModelStatus::NotFinite);
+
+	// An untouched default model is identity, which must be acceptable.
+	ErrorModel identity;
+	TRUE_(checkAccelModel(identity, g) == AccelModelStatus::Ok);
+}
+
+void testAccelModelStoreNormalisesGyroMatrix() {
+	using namespace SlimeVR::Configuration;
+
+	// The dead-tracker hazard, mirrored. Storing an accelerometer model sets
+	// errorModelValid, and that one flag governs both matrices -- so a G_M that
+	// was never fitted, and is therefore all zero, would go live and multiply
+	// every gyroscope sample to zero.
+	float aM[9] = {0};
+	float gM[9] = {0};
+	float aOff[3] = {0, 0, 0};
+	bool accelCalibrated[3] = {false, false, false};
+
+	ErrorModel model;
+	model.m[0] = 1.02f;
+	model.m[4] = 0.98f;
+	model.m[8] = 1.01f;
+	model.bias[0] = 0.1f;
+	model.bias[1] = -0.2f;
+	model.bias[2] = 0.05f;
+
+	storeAccelModel(model, false, aM, gM, aOff, accelCalibrated);
+
+	const bool gyroIsIdentity = gM[0] == 1.0f && gM[4] == 1.0f && gM[8] == 1.0f
+							 && gM[1] == 0.0f && gM[2] == 0.0f && gM[3] == 0.0f
+							 && gM[5] == 0.0f && gM[6] == 0.0f && gM[7] == 0.0f;
+	TRUE_(gyroIsIdentity);
+
+	// A gyroscope sample survives the round trip rather than being zeroed.
+	const float gyro[3] = {1.0f, -2.0f, 3.0f};
+	float out[3];
+	ErrorModel stored;
+	for (int i = 0; i < 9; i++) {
+		stored.m[i] = gM[i];
+	}
+	stored.apply(gyro, out);
+	NEAR(out[0], 1.0, 1e-6);
+	NEAR(out[1], -2.0, 1e-6);
+	NEAR(out[2], 3.0, 1e-6);
+}
+
+void testAccelModelStorePreservesFittedGyroMatrix() {
+	using namespace SlimeVR::Configuration;
+
+	// A gyroscope scale measured earlier with SET GYROSCALE must survive an
+	// accelerometer calibration; the two are independent measurements and
+	// re-running one is not a reason to discard the other.
+	float aM[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+	float gM[9] = {1.005f, 0, 0, 0, 0.997f, 0, 0, 0, 1.002f};
+	float aOff[3] = {0, 0, 0};
+	bool accelCalibrated[3] = {false, false, false};
+
+	ErrorModel model;
+	model.m[0] = 1.02f;
+	model.bias[0] = 0.1f;
+
+	storeAccelModel(model, true, aM, gM, aOff, accelCalibrated);
+
+	NEAR(gM[0], 1.005, 1e-6);
+	NEAR(gM[4], 0.997, 1e-6);
+	NEAR(gM[8], 1.002, 1e-6);
+}
+
+void testAccelModelStoreIsActuallyApplied() {
+	using namespace SlimeVR::Configuration;
+
+	// End to end through the shape the sample path uses:
+	// corrected = A_M * (raw * AScale - A_off).
+	const double gain[3] = {1.03, 0.97, 1.01};
+	const double bias[3] = {0.12, -0.08, 0.05};
+
+	std::vector<float> samples;
+	for (int rep = 0; rep < 4; rep++) {
+		for (int p = 0; p < 6; p++) {
+			float raw[3];
+			rawForPosition(p, gain, 0.0, bias, raw);
+			samples.push_back(raw[0]);
+			samples.push_back(raw[1]);
+			samples.push_back(raw[2]);
+		}
+	}
+
+	ErrorModel fitted;
+	TRUE_(fitErrorModelDiagonal(samples.data(), 24, static_cast<float>(kG), fitted));
+	TRUE_(checkAccelModel(fitted, static_cast<float>(kG)) == AccelModelStatus::Ok);
+
+	float aM[9] = {0};
+	float gM[9] = {0};
+	float aOff[3] = {0, 0, 0};
+	bool accelCalibrated[3] = {false, false, false};
+	storeAccelModel(fitted, false, aM, gM, aOff, accelCalibrated);
+
+	TRUE_(accelCalibrated[0] && accelCalibrated[1] && accelCalibrated[2]);
+
+	double worst = 0;
+	for (int p = 0; p < 6; p++) {
+		float raw[3];
+		rawForPosition(p, gain, 0.0, bias, raw);
+		const float d[3] = {raw[0] - aOff[0], raw[1] - aOff[1], raw[2] - aOff[2]};
+		const float corrected[3] = {
+			aM[0] * d[0] + aM[1] * d[1] + aM[2] * d[2],
+			aM[3] * d[0] + aM[4] * d[1] + aM[5] * d[2],
+			aM[6] * d[0] + aM[7] * d[1] + aM[8] * d[2],
+		};
+		worst = std::max(
+			worst,
+			std::fabs(
+				std::sqrt(
+					corrected[0] * corrected[0] + corrected[1] * corrected[1]
+					+ corrected[2] * corrected[2]
+				)
+				- kG
+			)
+		);
+	}
+	TRUE_(worst < 1e-3);
+}
+
 int main() {
 	testQuatBasics();
 	testIntegration();
@@ -1430,6 +2170,23 @@ int main() {
 	testGyroScaleModelPreservesFittedAccelMatrix();
 	testGyroScaleReportsDiscardedMisalignment();
 	testGyroScaleModelIsActuallyApplied();
+	testSixPositionClassifiesAxes();
+	testSixPositionCapturesAndFits();
+	testSixPositionFullFitIsSingularOnPerfectPositions();
+	testDiagonalFitHelpsEvenWhenTheSensorIsMisaligned();
+	testDiagonalFitIsUnityForAPerfectSensor();
+	testDiagonalFitRejectsPoorCoverage();
+	testDiagonalFitRejectsMarginalCoverage();
+	testSixPositionRequiresRest();
+	testSixPositionRetriesAfterMovement();
+	testSixPositionWillNotCaptureTwiceWithoutMoving();
+	testSixPositionDwellRejectsBriefTouches();
+	testSixPositionRejectsSloppyHolds();
+	testSixPositionAbortAndRestartAreClean();
+	testAccelModelBoundsRejectImplausibleFits();
+	testAccelModelStoreNormalisesGyroMatrix();
+	testAccelModelStorePreservesFittedGyroMatrix();
+	testAccelModelStoreIsActuallyApplied();
 
 	if (gFailures == 0) {
 		std::printf("selftest: %d checks passed\n", gChecks);

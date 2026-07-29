@@ -28,6 +28,7 @@
 #include "GlobalVars.h"
 #include "base64.hpp"
 #include "batterymonitor.h"
+#include "calibration.h"
 #include "configuration/gyroscalecmd.h"
 #include "logging/Logger.h"
 #include "utils.h"
@@ -37,12 +38,14 @@
 #endif
 
 #ifdef EXT_SERIAL_COMMANDS
-#define CALLBACK_SIZE 7  // Increase callback size to allow for debug commands
+#define CALLBACK_SIZE 8  // Increase callback size to allow for debug commands
 #include "i2cscan.h"
 #endif
 
+// SET, GET, FRST, REBOOT, DELCAL, CALIBRATE, TCAL. The callback table is a
+// fixed-size array, so this has to be grown alongside setUp().
 #ifndef CALLBACK_SIZE
-#define CALLBACK_SIZE 6  // Default callback size
+#define CALLBACK_SIZE 7  // Default callback size
 #endif
 
 #if defined(VENDOR_URL) && defined(VENDOR_NAME) && defined(PRODUCT_NAME) \
@@ -594,6 +597,76 @@ void cmdDeleteCalibration(CmdParser* parser) {
 	configuration.eraseSensors();
 }
 
+/**
+ * `CALIBRATE ACCEL [sensorId]` -- runs the guided six-position accelerometer
+ * calibration, and `CALIBRATE CANCEL [sensorId]` abandons it.
+ *
+ * Every other calibration on this firmware happens unprompted while the tracker
+ * is worn, which is why there has been no command to start one. The
+ * accelerometer error model is the exception: it can only be fitted from six
+ * specific static orientations, and those will never occur on their own. Hence
+ * the one calibration that has to be asked for.
+ *
+ * With no `sensorId` every sensor is addressed at once, which is the usual case
+ * -- the positions are properties of the board, so an extension tracker holding
+ * two IMUs calibrates both from the same six placements.
+ *
+ * Progress, refusals and the fitted result are logged by the calibrator as they
+ * happen; this command only starts the thing.
+ */
+void cmdCalibrate(CmdParser* parser) {
+	const bool cancel
+		= parser->getParamCount() > 1 && parser->equalCmdParam(1, "CANCEL");
+	const bool accel = parser->getParamCount() > 1 && parser->equalCmdParam(1, "ACCEL");
+
+	if (!cancel && !accel) {
+		logger.info("Usage:");
+		logger.info(
+			"  CALIBRATE ACCEL [sensorId]: guided six-position accelerometer "
+			"calibration"
+		);
+		logger.info("  CALIBRATE CANCEL [sensorId]: abandon a guided calibration");
+		logger.info(
+			"Note: gyroscope bias, sample rates and temperature compensation "
+			"calibrate themselves while the tracker is worn -- only the "
+			"accelerometer error model needs asking for"
+		);
+		return;
+	}
+
+	auto& sensors = sensorManager.getSensors();
+
+	bool all = true;
+	size_t target = 0;
+	if (parser->getParamCount() > 2) {
+		const char* text = parser->getCmdParam(2);
+		char* end = nullptr;
+		const long id = text != nullptr ? strtol(text, &end, 10) : 0;
+		if (text == nullptr || end == text || end == nullptr || *end != '\0' || id < 0
+			|| static_cast<size_t>(id) >= sensors.size()) {
+			logger.error(
+				"CMD CALIBRATE ERROR: '%s' is not a sensor id (have %d)",
+				text != nullptr ? text : "",
+				static_cast<int>(sensors.size())
+			);
+			return;
+		}
+		all = false;
+		target = static_cast<size_t>(id);
+	}
+
+	for (size_t i = 0; i < sensors.size(); i++) {
+		if (!all && i != target) {
+			continue;
+		}
+		if (cancel) {
+			sensors[i]->cancelCalibration();
+		} else {
+			sensors[i]->startCalibration(CALIBRATION_TYPE_INTERNAL_ACCEL);
+		}
+	}
+}
+
 #if EXT_SERIAL_COMMANDS
 void cmdScanI2C(CmdParser* parser) {
 	logger.info("Forcing I2C scan...");
@@ -607,6 +680,7 @@ void setUp() {
 	cmdCallbacks.addCmd("FRST", &cmdFactoryReset);
 	cmdCallbacks.addCmd("REBOOT", &cmdReboot);
 	cmdCallbacks.addCmd("DELCAL", &cmdDeleteCalibration);
+	cmdCallbacks.addCmd("CALIBRATE", &cmdCalibrate);
 	cmdCallbacks.addCmd("TCAL", &cmdTemperatureCalibration);
 #if EXT_SERIAL_COMMANDS
 	cmdCallbacks.addCmd("SCANI2C", &cmdScanI2C);

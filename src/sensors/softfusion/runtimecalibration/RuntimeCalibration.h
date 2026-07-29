@@ -28,7 +28,10 @@
 #include <cstdint>
 
 #include "../../../GlobalVars.h"
+#include "../../../calibration.h"
 #include "../../../configuration/Configuration.h"
+#include "../../../configuration/accelmodel.h"
+#include "../sixposition.h"
 #include "AccelBiasCalibrationStep.h"
 #include "GyroBiasCalibrationStep.h"
 #include "MotionlessCalibrationStep.h"
@@ -108,7 +111,73 @@ public:
 		printCalibration();
 	}
 
+	/**
+	 * Begins the guided six-position accelerometer calibration.
+	 *
+	 * Everything else in this class runs unprompted, in the background, while
+	 * the tracker is being worn. This one cannot: the accelerometer error model
+	 * needs the sensor held in six specific orientations, and no amount of
+	 * patience will produce those on their own. So it is the one calibration a
+	 * user has to be walked through, and the one that has to be asked for.
+	 */
+	void startCalibration(int calibrationType) final {
+		if (calibrationType != CALIBRATION_TYPE_INTERNAL_ACCEL) {
+			return;
+		}
+
+		// The normal step machine is suspended for the duration. Both want the
+		// accelerometer stream and both want the tracker at rest, and the
+		// guided flow is the one with a user waiting on it.
+		currentStep->cancel();
+		isCalibrating = false;
+
+		sixPosition.begin();
+		sixPositionLastProgressMillis = millis();
+
+		logger.info("Guided accelerometer calibration started for sensor %d", sensorId);
+		logger.info(
+			"Hold the tracker still with each axis pointing up in turn; it will "
+			"capture on its own"
+		);
+		promptForNextPosition();
+	}
+
+	void cancelCalibration() final {
+		if (!sixPosition.isRunning()) {
+			return;
+		}
+		sixPosition.abort();
+		logger.info(
+			"Guided accelerometer calibration cancelled; the stored calibration is "
+			"unchanged"
+		);
+	}
+
 	void tick() final {
+		if (sixPosition.isRunning()) {
+			// The only thing tick() does during the guided flow is give up. The
+			// tracker is on a desk with someone watching a serial log, and a
+			// procedure that waits forever for a position they have stopped
+			// trying to reach is worse than one that says so.
+			if (millis() - sixPositionLastProgressMillis
+				> sixPositionTimeoutSeconds * 1e3) {
+				logger.error(
+					"Guided accelerometer calibration timed out after %d of %d "
+					"positions",
+					static_cast<int>(sixPosition.capturedCount()),
+					static_cast<int>(SoftFusion::kSixPositionCount)
+				);
+				sixPosition.abort();
+			}
+			return;
+		}
+
+		if (sixPosition.getState()
+			== SoftFusion::SixPositionCollector::State::Complete) {
+			finishSixPositionCalibration();
+			return;
+		}
+
 		if (skippedAStep && !lastTickRest && fusion.getRestDetected()) {
 			computeNextCalibrationStep();
 			skippedAStep = false;
@@ -236,6 +305,11 @@ public:
 	}
 
 	void provideAccelSample(const RawSensorT accelSample[3]) final {
+		if (sixPosition.isRunning()) {
+			feedSixPosition(accelSample);
+			return;
+		}
+
 		if (isCalibrating) {
 			currentStep->processAccelSample(accelSample);
 		}
@@ -352,6 +426,147 @@ private:
 		}
 	}
 
+	void promptForNextPosition() {
+		const int next = sixPosition.nextPosition();
+		if (next < 0) {
+			return;
+		}
+		logger.info(
+			"Next: hold the tracker with %s (%d of %d captured)",
+			SoftFusion::SixPositionCollector::positionName(next),
+			static_cast<int>(sixPosition.capturedCount()),
+			static_cast<int>(SoftFusion::kSixPositionCount)
+		);
+	}
+
+	void feedSixPosition(const RawSensorT accelSample[3]) {
+		// Uncorrected on purpose. The fit measures the error the sample path is
+		// about to remove, so feeding it samples that already had a model
+		// applied would fit the residual of the old model and compound the two.
+		const float scaled[3] = {
+			static_cast<float>(accelSample[0]) * static_cast<float>(Consts::AScale),
+			static_cast<float>(accelSample[1]) * static_cast<float>(Consts::AScale),
+			static_cast<float>(accelSample[2]) * static_cast<float>(Consts::AScale),
+		};
+
+		const int wasCapturing = sixPosition.activePosition();
+		const auto event = sixPosition.feed(
+			scaled,
+			fusion.getRestDetected(),
+			static_cast<float>(CONST_EARTH_GRAVITY)
+		);
+
+		switch (event) {
+			case SoftFusion::SixPositionEvent::None:
+				return;
+			case SoftFusion::SixPositionEvent::Started:
+				logger.info(
+					"Capturing %s -- hold still",
+					SoftFusion::SixPositionCollector::positionName(
+						sixPosition.activePosition()
+					)
+				);
+				break;
+			case SoftFusion::SixPositionEvent::Disturbed:
+				logger.info(
+					"Movement during %s -- that position will be retried",
+					SoftFusion::SixPositionCollector::positionName(wasCapturing)
+				);
+				break;
+			case SoftFusion::SixPositionEvent::Captured:
+				logger.info(
+					"Captured %s",
+					SoftFusion::SixPositionCollector::positionName(wasCapturing)
+				);
+				promptForNextPosition();
+				break;
+			case SoftFusion::SixPositionEvent::Complete:
+				logger.info(
+					"Captured %s -- all %d positions done, fitting",
+					SoftFusion::SixPositionCollector::positionName(wasCapturing),
+					static_cast<int>(SoftFusion::kSixPositionCount)
+				);
+				break;
+		}
+
+		sixPositionLastProgressMillis = millis();
+	}
+
+	/**
+	 * Fits the collected positions and stores the result, or explains why not.
+	 *
+	 * Two independent refusals, and they mean different things. `fit` failing
+	 * is about the *data*: the positions did not span three dimensions, so no
+	 * model is recoverable. `checkAccelModel` failing is about the *answer*: a
+	 * model was recovered and it describes a part no accelerometer could be.
+	 * Either way the previous calibration survives, because a tracker that is
+	 * slightly uncalibrated is worth much more than one confidently wrong.
+	 */
+	void finishSixPositionCalibration() {
+		constexpr auto gravity = static_cast<float>(CONST_EARTH_GRAVITY);
+
+		SoftFusion::ErrorModel model;
+		const bool fitted = sixPosition.fit(gravity, model);
+		sixPosition.abort();
+
+		if (!fitted) {
+			logger.error(
+				"Accelerometer fit refused: the six positions did not span enough "
+				"directions"
+			);
+			logger.info(
+				"Hold each axis closer to vertical and run CALIBRATE ACCEL again"
+			);
+			return;
+		}
+
+		const auto status = Configuration::checkAccelModel(model, gravity);
+		if (status != Configuration::AccelModelStatus::Ok) {
+			logger.error(
+				"Accelerometer fit rejected: %s",
+				Configuration::accelModelStatusToString(status)
+			);
+			logger.info("The stored calibration is unchanged");
+			return;
+		}
+
+		Configuration::storeAccelModel(
+			model,
+			calibration.errorModelValid,
+			calibration.A_M,
+			calibration.G_M,
+			calibration.A_off,
+			calibration.accelCalibrated
+		);
+		calibration.errorModelValid = true;
+		saveCalibration();
+
+		logger
+			.info("Accel bias: %f %f %f", model.bias[0], model.bias[1], model.bias[2]);
+		logger.info("Accel scale: %f %f %f", model.m[0], model.m[4], model.m[8]);
+
+		// Applied without a reboot, unlike SET GYROSCALE. That command has to
+		// defer because the value is typed in from a host tool and nothing
+		// re-reads it; here the fit just ran against this sensor's own samples,
+		// so the running copy can be updated in place.
+		if (!toggles.getToggle(SensorToggles::CalibrationEnabled)) {
+			logger.info(
+				"Stored, but not applied: calibration is disabled for this sensor"
+			);
+			return;
+		}
+		for (size_t i = 0; i < 9; i++) {
+			activeCalibration.A_M[i] = calibration.A_M[i];
+			activeCalibration.G_M[i] = calibration.G_M[i];
+		}
+		for (size_t i = 0; i < 3; i++) {
+			activeCalibration.A_off[i] = calibration.A_off[i];
+			activeCalibration.accelCalibrated[i] = true;
+		}
+		activeCalibration.errorModelValid = true;
+		logger.info("Accelerometer calibration applied");
+	}
+
 	void saveCalibration() {
 		SlimeVR::Configuration::SensorConfig calibration{};
 		calibration.type
@@ -458,6 +673,15 @@ private:
 	NullCalibrationStep<RawSensorT> nullCalibrationStep{calibration};
 
 	CalibrationStep<RawSensorT>* currentStep = &nullCalibrationStep;
+
+	/// Long enough to turn a tracker over six times with fumbling, short enough
+	/// that an abandoned session does not leave the normal background
+	/// calibration suspended indefinitely. Measured from the last progress, not
+	/// from the start, so a slow user is never cut off mid-procedure.
+	static constexpr float sixPositionTimeoutSeconds = 120;
+
+	SoftFusion::SixPositionCollector sixPosition;
+	uint32_t sixPositionLastProgressMillis = 0;
 
 	bool isCalibrating = false;
 	bool skippedAStep = false;

@@ -35,7 +35,9 @@ HEADERS   := $(wildcard src/*.h) $(VQF_DIR)/vqf.h \
              $(wildcard $(ROOT)/src/sensors/softfusion/drivers/magfifo.h) \
              $(wildcard $(ROOT)/src/sensors/softfusion/drivers/bmm350comp.h) \
              $(wildcard $(ROOT)/src/sensors/softfusion/errormodel.h) \
-             $(wildcard $(ROOT)/src/configuration/gyroscalecmd.h)
+             $(wildcard $(ROOT)/src/sensors/softfusion/sixposition.h) \
+             $(wildcard $(ROOT)/src/configuration/gyroscalecmd.h) \
+             $(wildcard $(ROOT)/src/configuration/accelmodel.h)
 
 SOURCES := src/main.cpp src/dataset.cpp src/metrics.cpp src/synth.cpp \
            src/dataset.h src/metrics.h src/quatmath.h src/synth.h \

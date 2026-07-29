@@ -359,6 +359,92 @@ If the command reports `Sensor 0 does not use runtime calibration`, the board is
 using one of the older fixed calibration formats, which has no error-model
 matrix to write into.
 
+### Test C3 — accelerometer bias and scale, on the tracker
+
+Unlike everything else in this section, this one needs no capture and no host
+tool. The tracker runs the fit itself:
+
+```
+CALIBRATE ACCEL
+```
+
+Then hold it still with each axis pointing up in turn — six positions, any
+order. It captures each one on its own as soon as it sees the tracker settled in
+a position it has not already recorded, so there is nothing to press:
+
+```
+[INFO ] Guided accelerometer calibration started for sensor 0
+[INFO ] Hold the tracker still with each axis pointing up in turn; it will capture on its own
+[INFO ] Next: hold the tracker with +X up (0 of 6 captured)
+[INFO ] Capturing +Z up -- hold still
+[INFO ] Captured +Z up
+[INFO ] Next: hold the tracker with +X up (1 of 6 captured)
+...
+[INFO ] Captured -Y up -- all 6 positions done, fitting
+[INFO ] Accel bias: 0.118 -0.079 0.052
+[INFO ] Accel scale: 1.0298 0.9702 1.0101
+[INFO ] Accelerometer calibration applied
+```
+
+Applied immediately, no reboot — unlike `SET GYROSCALE`, which has to defer
+because the number comes from outside. Here the fit just ran against this
+sensor's own samples, so the running copy is updated in place.
+
+`CALIBRATE CANCEL` abandons a run, and it gives up on its own after two minutes
+with no progress. Add a sensor ID (`CALIBRATE ACCEL 1`) to address one IMU; with
+none, every sensor calibrates from the same six placements, which is what you
+want on an extension holding two.
+
+**What it fits, and what it deliberately does not.** Bias and per-axis scale
+only. The matrix it writes is diagonal.
+
+That is narrower than "six positions determines bias, scale *and* misalignment
+by least squares", which is what issue #5 proposed and what the textbook
+procedure is usually described as doing. Working through it, the textbook is
+wrong about the perfectly-executed case, and in an interesting direction: the
+full quadric fit has columns for `xy`, `xz` and `yz`, and holding exactly one
+axis vertical makes every one of those products zero. All three columns vanish
+and the solve is **singular** — not ill-conditioned, singular. It is only
+hand-placement error that makes the full fit succeed at all, which means the
+misalignment terms a six-position fit reports are estimated from how badly you
+held the tracker.
+
+Inventing cross-axis coupling is the worst possible direction to be wrong in:
+it converts pitch and roll into spurious yaw, and yaw is the unobservable axis
+on a 6-DoF tracker. So the on-device flow fits the six unknowns six positions
+genuinely determine and declines to guess the other six. Misalignment stays with
+the host path below, where a capture can cover orientations that actually
+observe it.
+
+**Coverage still matters, for a subtler reason than you would expect.** Given
+noiseless samples, even badly thinned coverage — four positions in one plane
+plus a pair lifted 20° out of it — fits *exactly*. Thin coverage does not fail
+loudly. What it does is amplify noise, measured on synthetic data with 0.02 m/s²
+surviving the block average:
+
+| out-of-plane coverage | worst Z-scale error |
+|---|---|
+| full six positions | 0.23% |
+| pair lifted 35° | 1.06% |
+| pair lifted 20° | 3.3% |
+
+At 3.3% the calibration is adding more scale error than it removes. The fit
+refuses sample sets whose direction spread falls below threshold for exactly
+this reason, and the tolerance on each hold (20° off-axis) exists to keep you
+well clear of it.
+
+**What it will refuse.** Two independent checks, and they mean different things.
+The fit itself refuses when the six positions did not span three dimensions — no
+model is recoverable. The plausibility check refuses when a model *was*
+recovered and describes a part no accelerometer could be: scale outside
+0.90–1.10, misalignment above 0.10, or bias above 10% of gravity. Either way the
+previous calibration survives untouched, because a slightly uncalibrated tracker
+is worth much more than a confidently wrong one.
+
+**For the full matrix**, including misalignment, use `SET LOGRAW` to capture a
+session covering orientations off the axes and fit it on the host — that path
+observes the cross terms this one cannot.
+
 ### Test D — temperature ramp
 
 The firmware has temperature-gradient compensation and nothing currently proves

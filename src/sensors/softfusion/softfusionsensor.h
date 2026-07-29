@@ -481,6 +481,8 @@ public:
 		calibrator.startCalibration(calibrationType);
 	}
 
+	void cancelCalibration() final { calibrator.cancelCalibration(); }
+
 	[[nodiscard]] bool isFlagSupported(SensorToggles toggle) const final {
 		return toggle == SensorToggles::CalibrationEnabled
 			|| toggle == SensorToggles::TempGradientCalibrationEnabled;
