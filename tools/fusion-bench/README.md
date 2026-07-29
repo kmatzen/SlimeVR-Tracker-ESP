@@ -826,11 +826,17 @@ make format-check  # verify, as CI does
 
 ## Bring-up: BMM350 over the LSM6DSV sensor hub
 
-**Status: compiles, never run against hardware.** The register values come from
-the LSM6DSV datasheet, ST's `lsm6dsv_reg.h`, and Bosch's `bmm350_defs.h`, but
-none of the sequences have been executed on a real part. Work through these
-milestones in order — each one isolates a different failure, and stopping at the
-first that fails tells you exactly where the problem is.
+**Status: the sensor-hub half runs on hardware; the BMM350 half has never been
+answered by a real part.** Those are separate claims and worth keeping separate.
+The LSM6DSV master has been driven on silicon — it configures, issues I2C cycles
+and reports their outcome correctly (see "Confirmed working on silicon" below),
+and getting there fixed two real register bugs. What no board has done yet is
+*acknowledge*: the only Blueberry tested is the `[NO_MAG]` variant with U6
+unpopulated, so every BMM350 register value below — taken from the Bosch
+datasheet (BST-BMM350-DS001) and `BMM350_SensorAPI` — is still unexercised.
+
+Work through the milestones in order — each isolates a different failure, and
+stopping at the first that fails tells you exactly where the problem is.
 
 Build with `serialDebug` set to `true` in `src/debug.h` so the driver's log
 output is visible.
@@ -921,15 +927,48 @@ Watch the serial log during startup for:
 
 - **"Found mag BMM350"** — the sensor hub read path works. Move to milestone 2.
 - **"Trying" but never "Found"** — `readAux` returned something other than
-  `0x33`. Most likely causes, in order: the board straps the BMM350's address
-  pin high, so it is at `0x15` not `0x14` (change `deviceId` in the
-  `MagDefinition`); the aux bus needs the internal pull-ups that
-  `startAuxPolling` enables but `readAux` does not; `STATUS_MASTER_MAINPAGE`
-  (`0x39`) is wrong for this part, so `waitForEndOp` returns before the
-  transaction completes.
+  `0x33`, i.e. the hub completed a cycle and the part did not answer as
+  expected. On a Blueberry the remaining causes are, in order: **U6 is not
+  populated** (the `[NO_MAG]` BOM variant — by far the most likely, and what
+  happened here); the part is present but unpowered, which is
+  indistinguishable from absent at the bus level, so measure 1.8 V across C15
+  first; or the part is fitted and faulty, which the designer's caution sheet
+  explicitly allows for.
 - **"Aux read ... timed out"** — the hub is not completing transactions at all.
   The hub is clocked by the accelerometer, so confirm the IMU is streaming
   normally first.
+
+Three causes this list used to name have since been eliminated, and are kept
+here only so they are not re-investigated: the address strap (ADSEL is tied to
+GND on this board — see below — so `0x14` is right), the aux pull-ups (`setAuxId`
+now calls `enableAuxPullups()`, so `readAux` gets them too, not just
+`startAuxPolling`), and `STATUS_MASTER_MAINPAGE` (corrected from `0x39` to
+`0x48`).
+
+#### Verified from the board files, without hardware
+
+Read out of the EasyEDA project in the CheeseCake repo
+(`006-LSM6DSV 「Blueberry」/LSM6DSV_MAG_JST125.epro`, sheet net list) rather than
+inferred, so these are settled for this board and need no bring-up time:
+
+- **ADSEL (U6 pin B2) is tied to GND**, so the I2C address is `0x14`. The `0x15`
+  strap hypothesis does not apply here.
+- **The aux bus is point-to-point.** `SCX` and `SDX` have exactly two endpoints
+  each — the LSM6DSV and U6 — so nothing else loads them, and there is no
+  external pull-up anywhere on either net. `IF_CFG.SHUB_PU_EN` is therefore
+  mandatory on this board, not an optimisation.
+- **U6's SDA/SCK go only to the LSM6DSV's `SDX`/`SCX`**, never to the host bus.
+  The ESP8266 cannot reach the magnetometer directly, so the sensor hub is the
+  only route — there is no simpler bit-banged alternative to fall back on. (A
+  pass-through probe can bridge the two buses, which is how the NACK above was
+  independently confirmed.)
+- **VDDIO (B3) is on 3V3 and VDD (C1) on 1V8**, the latter from U8
+  (AP7343D-18FS4-7B). VDDIO shares the LSM6DSV's supply, so aux-bus logic levels
+  match with no shifting; only the analog supply is 1.8 V, which is why C15 is
+  the thing to measure.
+- **INT (A1) is marked no-connect**, so data-ready interrupt from the mag is not
+  available. Polling via the hub is the only option, which is what the driver
+  does.
 
 ### Milestone 2 — the magnetometer is configured
 

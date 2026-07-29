@@ -201,9 +201,11 @@ struct LSM6DSSensorHub {
 	 * Internal pull-ups on the auxiliary bus.
 	 *
 	 * Must happen before *any* transaction, not just before continuous polling:
-	 * boards commonly fit no external pull-ups on SDX/SCX (the CheeseCake
-	 * Blueberry does not), and without them every hub transaction simply never
-	 * completes.
+	 * boards commonly fit no external pull-ups on SDX/SCX, and without them
+	 * every hub transaction simply never completes. On the CheeseCake Blueberry
+	 * this is confirmed from the schematic net list rather than assumed -- SDX
+	 * and SCX have exactly two endpoints each, the IMU and the magnetometer,
+	 * with no resistor on either net.
 	 */
 	/**
 	 * Releases the SDX/SCX pins from the OIS / SPI2 auxiliary interface.

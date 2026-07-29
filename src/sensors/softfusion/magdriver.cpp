@@ -85,8 +85,11 @@ std::vector<MagDefinition> MagDriver::supportedMags{
 		// tools/fusion-bench/README.md before trusting any of it.
 		.name = "BMM350",
 
-		// 0x14 with the address pin low, 0x15 with it high. Only the low
-		// variant is probed; a board strapping it high will not be detected.
+		// 0x14 with ADSEL low, 0x15 with it high. Only the low variant is
+		// probed, which is correct for the board this driver targets: on the
+		// CheeseCake "Blueberry" schematic ADSEL (U6 pin B2) is tied directly
+		// to GND, so the part answers at 0x14. A different board strapping it
+		// high would not be detected.
 		.deviceId = 0x14,
 
 		.whoAmIReg = 0x00,
@@ -97,9 +100,12 @@ std::vector<MagDefinition> MagDriver::supportedMags{
 		.dataWidth = MagDataWidth::NineByte,
 		.dataReg = 0x31,
 
-		// 0.1 uT/LSB is a placeholder. The BMM350 needs OTP trim data and a
-		// per-axis compensation to give a calibrated magnitude, which is not
-		// implemented -- see the note below.
+		// Fallback only. The calibrated path is `readTrim` below plus
+		// `bmm350Compensate`, which supplies offset, sensitivity and
+		// cross-axis terms in microtesla directly; this factor is used just
+		// when the OTP read fails, so that an untrimmed part still gives a
+		// usable field *direction* rather than nothing. 0.1 uT/LSB is a
+		// nominal figure and is not a calibrated sensitivity.
 		.scale = 0.1f,
 
 		// The BMM350 emits two dummy bytes before real data on a burst read.
