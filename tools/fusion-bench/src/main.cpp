@@ -2,12 +2,14 @@
 //
 //   fusion-bench suite [--baseline FILE] [--write-baseline FILE] [--json FILE]
 //   fusion-bench gen TRAJECTORY OUT.csv [--duration S] [--rate HZ] [--seed N]
-//                                       [--gyro-bias DPS] [--gyro-scale FRAC]
-//                                       [--with-mag]
+//                                       [--gyro-bias DPS] [--gyro-noise DPS]
+//                                       [--gyro-scale FRAC] [--accel-bias MS2]
+//                                       [--accel-noise MS2] [--with-mag]
 //   fusion-bench run DATASET.csv [--json FILE] [--stock] [--mag]
 //                                [--tau-acc X] [--rest-th-gyr X]
 //                                [--rest-th-acc X] [--rest-min-t X]
 //   fusion-bench sweep DATASET.csv PARAM FROM TO STEPS
+//   fusion-bench noise DATASET.csv [--rest-min-t X] [--rest-th-acc X] [--stock]
 //
 // See README.md for what the numbers mean and how to produce real datasets.
 #include <cstdio>
@@ -22,6 +24,7 @@
 #include "dataset.h"
 #include "gyroscale.h"
 #include "metrics.h"
+#include "noisefloor.h"
 #include "synth.h"
 
 using namespace fb;
@@ -40,8 +43,14 @@ int usage() {
 		"  fusion-bench run DATASET.csv [options]\n"
 		"  fusion-bench sweep DATASET.csv PARAM FROM TO STEPS\n"
 		"  fusion-bench gyro-scale DATASET.csv\n"
+		"  fusion-bench noise DATASET.csv [options]\n"
 		"\ntrajectories: %s\n"
-		"sweep params: tau-acc, rest-th-gyr, rest-th-acc, rest-min-t\n",
+		"sweep params: tau-acc, rest-th-gyr, rest-th-acc, rest-min-t\n"
+		"gen options:  --duration S --rate HZ --seed N --gyro-bias DPS\n"
+		"              --gyro-noise DPS --gyro-scale FRAC --accel-bias MS2\n"
+		"              --accel-noise MS2 --with-mag\n"
+		"run options:  --json FILE --stock --mag --tau-acc X --rest-th-gyr X\n"
+		"              --rest-th-acc X --rest-min-t X\n",
 		trajectories.c_str()
 	);
 	return 2;
@@ -85,9 +94,25 @@ struct SuiteCase {
 
 const SuiteCase kSuite[] = {
 	// Drift with a realistic residual bias -- the headline regression test.
+	//
+	// This row is also the harness's rest-cliff regression guard, though it was
+	// not designed as one. It runs at the synthetic default accelerometer noise
+	// of 0.02 m/s^2 per axis, where the cliff sits at 0.0668, and the tuned
+	// restThAcc of 0.06 falls 10% under it -- so rest is never detected here and
+	// the baseline drift is -3.577 deg/min rather than the -0.018 the other rows
+	// see. If a change moves this row toward zero, the cliff moved, and that is
+	// worth knowing.
 	{"static-tuned", "static", 120.0, 0.15, 0.0, true},
-	// Same input, stock VQF parameters. The delta between these two rows is
-	// exactly what issue #4 (tuned params never reach softfusion IMUs) is about.
+	// Same input, stock VQF parameters -- and stock is what every softfusion IMU
+	// actually runs, so this row is the realistic one.
+	//
+	// The delta between these two rows was read as the cost of issue #4 (tuned
+	// params never reaching softfusion IMUs). Measured, it is not: it is the
+	// cliff above, and it exists only because the synthetic noise here is about
+	// 5x the 0.004 m/s^2 per-axis noise measured on a real LSM6DSV. At real
+	// noise both parameter sets clear the cliff and perform identically, which is
+	// what Bench Test A found on hardware. `fusion-bench noise` reports the
+	// margin for any capture.
 	{"static-stock", "static", 120.0, 0.15, 0.0, false},
 	// Tilt tracking away from level.
 	{"tilted", "static-tilted", 60.0, 0.15, 0.0, true},
@@ -495,6 +520,108 @@ int cmdGyroScale(int argc, char** argv) {
 	return 0;
 }
 
+int cmdNoise(int argc, char** argv) {
+	if (argc < 3) {
+		return usage();
+	}
+	Dataset ds;
+	std::string err;
+	if (!loadDataset(argv[2], ds, err)) {
+		std::fprintf(stderr, "%s\n", err.c_str());
+		return 1;
+	}
+	const BenchParams p = parseBenchParams(argc, argv);
+	const AccelNoiseResult r = measureAccelNoise(ds, p);
+
+	std::printf(
+		"accelerometer noise (m/s^2, 1 sigma):\n"
+		"  per axis     x %.5f  y %.5f  z %.5f\n"
+		"  vector       %.5f\n",
+		r.axisSigma[0],
+		r.axisSigma[1],
+		r.axisSigma[2],
+		r.vectorSigma
+	);
+
+	if (!r.valid) {
+		std::fprintf(stderr, "no threshold estimate: %s\n", r.reason.c_str());
+		return 1;
+	}
+
+	const double configured = r.configuredThreshold;
+	const double margin
+		= r.settledThreshold > 0 ? configured / r.settledThreshold : 0.0;
+
+	std::printf(
+		"\nrest residual against VQF's low-pass (the quantity restThAcc bounds):\n"
+		"  rms          %.5f\n"
+		"  peak         %.5f\n"
+		"\nrest window    %zu samples (restMinT %.3f s at %.1f Hz)\n"
+		"accel samples  %zu\n",
+		r.residualRms,
+		r.residualPeak,
+		r.restWindowSamples,
+		p.restMinT,
+		ds.accTs > 0 ? 1.0 / ds.accTs : 0.0,
+		r.accelSamples
+	);
+
+	std::printf(
+		"\nminimum restThAcc that admits rest:\n"
+		"  anywhere              %.5f  (includes the filter's startup transient)\n"
+		"  once settled          %.5f  (= %.2f x vector sigma) <- configure against "
+		"this\n"
+		"configured restThAcc:   %.6f  (%.1fx the settled minimum)\n",
+		r.requiredThreshold,
+		r.settledThreshold,
+		r.sigmaMultiple,
+		configured,
+		margin
+	);
+
+	// A threshold between the two bounds catches rest during startup and never
+	// again. Worth calling out separately: first_rest_sec looks healthy, so the
+	// usual diagnostic says nothing is wrong.
+	if (configured >= r.requiredThreshold && configured < r.settledThreshold) {
+		std::fprintf(
+			stderr,
+			"\nFAIL: threshold sits between the two bounds. Rest is reached during\n"
+			"the filter's startup transient and never again, so first_rest_sec looks\n"
+			"healthy while bias estimation stops after boot. Raise restThAcc to at\n"
+			"least %.5f.\n",
+			r.settledThreshold
+		);
+		return 1;
+	}
+
+	// Below the cliff the failure is total and silent: rest is never detected,
+	// so gyroscope bias estimation never runs. Say so loudly, and exit non-zero,
+	// because a capture that cannot reach rest makes every other metric from it
+	// meaningless.
+	if (configured < r.requiredThreshold) {
+		std::fprintf(
+			stderr,
+			"\nFAIL: configured threshold is below the cliff -- rest will never be\n"
+			"detected on this hardware, so gyroscope bias estimation will never run.\n"
+			"Nothing in the firmware's logs reports this; first_rest_sec = -1 is the\n"
+			"symptom. Raise restThAcc to at least %.5f.\n",
+			r.requiredThreshold
+		);
+		return 1;
+	}
+	if (margin < kMinThresholdMargin) {
+		std::fprintf(
+			stderr,
+			"\nWARNING: only %.1fx margin over the cliff (want %.1fx). Rest is\n"
+			"detected on this capture but a noisier part, a higher bandwidth\n"
+			"setting, or a vibrating mount could cross it.\n",
+			margin,
+			kMinThresholdMargin
+		);
+	}
+	return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -516,6 +643,9 @@ int main(int argc, char** argv) {
 	}
 	if (cmd == "gyro-scale") {
 		return cmdGyroScale(argc, argv);
+	}
+	if (cmd == "noise") {
+		return cmdNoise(argc, argv);
 	}
 	return usage();
 }

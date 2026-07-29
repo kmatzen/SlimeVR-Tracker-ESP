@@ -18,6 +18,26 @@
 
 #define NaN std::numeric_limits<sensor_real_t>::quiet_NaN()
 
+// A second copy of VQF's rest detector, used by the legacy six-position
+// accelerometer calibration rather than by the fusion filter. The defaults below
+// are upstream VQF's, *not* the retuned ones in lib/vqf/vqf.h -- so the two rest
+// detectors in this firmware disagree, deliberately but undocumentedly until now.
+//
+// Units: restMinTime and restFilterTau seconds, restThGyr deg/s, restThAcc m/s^2,
+// biasClip deg/s.
+//
+// `restThAcc` bounds the norm of the accelerometer residual against a low-pass
+// reference, and a single sample over it restarts the rest timer -- so rest needs
+// restMinTime/AccTs consecutive samples under the threshold, making this a bound
+// on peak noise rather than RMS noise. Setting it below the sensor's noise floor
+// means rest is never detected, silently. Measured on an LSM6DSV the cliff sits
+// at about 3.3x per-axis sigma; this 0.5 m/s^2 is far above it, which is the
+// right side to err on here, since a calibration that refuses to start is
+// obvious to the user while one that captures during motion is not.
+//
+// Note `REST_DETECTION_DISABLE_LPF` below swaps the statistic for a plain
+// consecutive-sample difference while keeping the same threshold values, which is
+// a materially different quantity -- do not tune one against the other.
 struct RestDetectionParams {
 	sensor_real_t biasClip;
 	sensor_real_t biasSigmaRest;

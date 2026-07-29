@@ -333,6 +333,12 @@ private:
 
 		RestDetectionParams calibrationRestDetectionParams;
 		calibrationRestDetectionParams.restMinTime = AccelCalibRestSeconds;
+		// Tighter than the 0.5 default because this decides when a *held*
+		// position counts as settled, and a sloppy hold that still reads as rest
+		// contaminates the fit with the operator's hand tremor. Still roughly an
+		// order of magnitude above the measured accelerometer noise floor on an
+		// LSM6DSV (per-axis sigma ~0.004 m/s^2, cliff at ~3.3x that), so it does
+		// not risk the silent failure where rest is never detected at all.
 		calibrationRestDetectionParams.restThAcc = 0.25f;
 
 		RestDetection calibrationRestDetection(
