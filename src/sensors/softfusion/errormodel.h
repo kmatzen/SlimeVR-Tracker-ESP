@@ -151,7 +151,65 @@ inline bool cholesky3(const double q[9], double l[9]) {
 	return true;
 }
 
+/**
+ * Smallest eigenvalue of a symmetric positive-semidefinite 3x3, closed form.
+ *
+ * Used to ask how well the sample directions span three dimensions. An
+ * iterative solver would be overkill for a 3x3, and this runs once at
+ * calibration time rather than in the sample path.
+ */
+inline double smallestEigenvalue3(const double a[9]) {
+	const double p1 = a[1] * a[1] + a[2] * a[2] + a[5] * a[5];
+	const double tr = a[0] + a[4] + a[8];
+	if (p1 <= 0.0) {
+		double m = a[0];
+		if (a[4] < m) {
+			m = a[4];
+		}
+		if (a[8] < m) {
+			m = a[8];
+		}
+		return m;
+	}
+	const double q = tr / 3.0;
+	const double p2 = (a[0] - q) * (a[0] - q) + (a[4] - q) * (a[4] - q)
+					+ (a[8] - q) * (a[8] - q) + 2.0 * p1;
+	const double p = std::sqrt(p2 / 6.0);
+	if (p <= 0.0) {
+		return q;
+	}
+	double b[9];
+	for (int i = 0; i < 9; i++) {
+		b[i] = a[i] / p;
+	}
+	b[0] -= q / p;
+	b[4] -= q / p;
+	b[8] -= q / p;
+	const double detB = b[0] * (b[4] * b[8] - b[5] * b[7])
+					  - b[1] * (b[3] * b[8] - b[5] * b[6])
+					  + b[2] * (b[3] * b[7] - b[4] * b[6]);
+	double r = detB / 2.0;
+	if (r < -1.0) {
+		r = -1.0;
+	} else if (r > 1.0) {
+		r = 1.0;
+	}
+	const double phi = std::acos(r) / 3.0;
+	constexpr double twoPiOver3 = 2.0943951023931953;
+	return q + 2.0 * p * std::cos(phi + twoPiOver3);
+}
+
 }  // namespace detail
+
+/**
+ * Minimum directional spread required before a fit is accepted.
+ *
+ * The smallest eigenvalue of the covariance of the sample directions: 1/3 for
+ * perfectly isotropic coverage, 0 when the directions are coplanar. 0.05
+ * admits the classic six-position procedure with generous hand-placement error
+ * while rejecting a set that never left one plane.
+ */
+constexpr double kMinDirectionSpread = 0.05;
 
 /**
  * Fits an error model to static measurements taken in many orientations.
@@ -176,6 +234,47 @@ inline bool
 fitErrorModel(const float* samples, size_t count, float norm, ErrorModel& out) {
 	if (count < 9 || norm <= 0.0f) {
 		return false;
+	}
+
+	// Reject sample sets that do not actually span three dimensions.
+	//
+	// The quadric has nine unknowns, so nine samples make it *nominally*
+	// determined -- but samples clustered near one attitude, or confined to a
+	// plane, leave it near-singular. The solve still succeeds and returns a
+	// confidently wrong model, which is worse than no calibration at all
+	// because it is then applied to every subsequent sample.
+	//
+	// Directions rather than magnitudes, so a sensor with a large bias is not
+	// mistaken for poor coverage: it is where the sensor was *pointed* that
+	// determines whether the ellipsoid is observable.
+	{
+		double cov[9] = {0};
+		size_t used = 0;
+		for (size_t i = 0; i < count; i++) {
+			const double x = samples[i * 3 + 0];
+			const double y = samples[i * 3 + 1];
+			const double z = samples[i * 3 + 2];
+			const double len = std::sqrt(x * x + y * y + z * z);
+			if (len < 1e-9) {
+				continue;
+			}
+			const double d[3] = {x / len, y / len, z / len};
+			for (int r = 0; r < 3; r++) {
+				for (int c = 0; c < 3; c++) {
+					cov[r * 3 + c] += d[r] * d[c];
+				}
+			}
+			used++;
+		}
+		if (used < 9) {
+			return false;
+		}
+		for (int i = 0; i < 9; i++) {
+			cov[i] /= static_cast<double>(used);
+		}
+		if (detail::smallestEigenvalue3(cov) < kMinDirectionSpread) {
+			return false;
+		}
 	}
 
 	// Quadric: x'Qx + u'x = 1, nine unknowns after fixing the constant. Solving
