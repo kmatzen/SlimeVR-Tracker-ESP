@@ -112,6 +112,20 @@ struct RuntimeCalibrationSensorConfig {
 	bool errorModelValid;
 	float A_M[9];
 	float G_M[9];
+
+	// Whether the stored model came from continuous online estimation rather
+	// than from a deliberate calibration.
+	//
+	// The distinction exists because the estimator must not overwrite work a
+	// user did on purpose, but must be free to refresh its own estimate -- and
+	// without this it could not tell the two apart, so it would apply exactly
+	// once and then be locked out by the very flag it had just set.
+	//
+	// Appended, so a calibration written by older firmware reads it as false:
+	// "deliberate", which is the safe assumption. An existing calibration is
+	// then never overwritten by an estimate, which is the conservative
+	// direction to be wrong in.
+	bool errorModelFromOnline;
 };
 
 struct MPU6050SensorConfig {

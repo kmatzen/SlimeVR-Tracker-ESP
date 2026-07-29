@@ -133,6 +133,58 @@ inline const char* accelModelStatusToString(AccelModelStatus status) {
 }
 
 /**
+ * Whether an online estimate is allowed to overwrite what is stored.
+ *
+ * A deliberate calibration always wins. `CALIBRATE ACCEL` and `SET GYROSCALE`
+ * are things a user chose to do, and an estimator quietly undoing them would be
+ * the worst kind of surprise -- the tracker would appear to drift back to where
+ * it was before the user fixed it.
+ *
+ * The estimator may, however, replace *its own* previous estimate. That is the
+ * whole point of it being online: it has to keep up with a bias that moves.
+ * Without the provenance flag the two cases are indistinguishable, and the
+ * estimator would apply once and then be locked out by the flag it had just
+ * set.
+ */
+inline bool onlineEstimateMayApply(bool errorModelValid, bool errorModelFromOnline) {
+	return !errorModelValid || errorModelFromOnline;
+}
+
+/**
+ * Whether a new estimate differs enough from the stored one to be worth saving.
+ *
+ * Not a numerical nicety -- a flash-wear guard. The estimate moves a little
+ * with every observation, and a tracker that persisted each one would write to
+ * LittleFS several times a day for its whole life. The thresholds are the point
+ * below which a difference cannot matter to tracking: 0.01 m/s^2 is a thousandth
+ * of gravity, and 0.001 of scale is a tenth of the smallest error worth
+ * correcting.
+ *
+ * The applied (RAM) copy is updated regardless; only persistence waits for a
+ * material change.
+ */
+inline bool accelModelDiffersMaterially(
+	const SlimeVR::Sensors::SoftFusion::ErrorModel& model,
+	const float storedM[9],
+	const float storedBias[3]
+) {
+	constexpr float biasEpsilon = 0.01f;
+	constexpr float scaleEpsilon = 0.001f;
+	for (int i = 0; i < 3; i++) {
+		if (std::fabs(model.bias[i] - storedBias[i]) > biasEpsilon) {
+			return true;
+		}
+	}
+	static constexpr int diagonal[3] = {0, 4, 8};
+	for (const int i : diagonal) {
+		if (std::fabs(model.m[i] - storedM[i]) > scaleEpsilon) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/**
  * Writes a fitted accelerometer model into a sensor calibration.
  *
  * The bias goes to `aOff` and the matrix to `aM`, which is exactly how the

@@ -2543,6 +2543,114 @@ void testOnlineSurvivesNoise() {
 	NEAR(m.bias[1], bias[1], 2e-2);
 }
 
+void testOnlineEstimatePrecedence() {
+	using namespace SlimeVR::Configuration;
+
+	// A tracker nobody has calibrated: the estimator fills the vacuum.
+	TRUE_(onlineEstimateMayApply(/*valid=*/false, /*fromOnline=*/false));
+
+	// Its own previous answer: free to refresh, which is the whole point of
+	// being online. Without this the estimator would apply once and then be
+	// locked out by the very flag it had just set.
+	TRUE_(onlineEstimateMayApply(true, true));
+
+	// A deliberate calibration always wins. CALIBRATE ACCEL and SET GYROSCALE
+	// are things a user chose to do, and an estimator quietly undoing them
+	// would look exactly like the tracker drifting back to where it was.
+	TRUE_(!onlineEstimateMayApply(true, false));
+
+	// A config written before this flag existed reads it as false, because the
+	// loader zero-initialises before reading a short file. That maps to
+	// "deliberate", so an upgraded tracker's existing calibration is never
+	// overwritten by an estimate -- the conservative direction to be wrong in.
+	// The zero-fill itself is Configuration::loadSensors' guarantee.
+	TRUE_(!onlineEstimateMayApply(true, /*fromOnline=*/false));
+}
+
+void testOnlinePersistenceIsRateLimited() {
+	using namespace SlimeVR::Configuration;
+
+	// A flash-wear guard, not a numerical nicety. The estimate moves slightly
+	// with every observation; persisting each one would mean LittleFS writes
+	// several times a day for the life of the tracker, recording differences
+	// far below anything tracking can resolve.
+	const float storedM[9] = {1.02f, 0, 0, 0, 0.98f, 0, 0, 0, 1.0f};
+	const float storedBias[3] = {0.10f, -0.05f, 0.02f};
+
+	ErrorModel same;
+	same.m[0] = 1.02f;
+	same.m[4] = 0.98f;
+	same.m[8] = 1.0f;
+	same.bias[0] = 0.10f;
+	same.bias[1] = -0.05f;
+	same.bias[2] = 0.02f;
+	TRUE_(!accelModelDiffersMaterially(same, storedM, storedBias));
+
+	// Drift far below what tracking can see does not earn a write.
+	ErrorModel noise = same;
+	noise.bias[0] = 0.1005f;
+	noise.m[4] = 0.9805f;
+	TRUE_(!accelModelDiffersMaterially(noise, storedM, storedBias));
+
+	// A real change does.
+	ErrorModel moved = same;
+	moved.bias[1] = -0.09f;
+	TRUE_(accelModelDiffersMaterially(moved, storedM, storedBias));
+
+	ErrorModel rescaled = same;
+	rescaled.m[8] = 1.01f;
+	TRUE_(accelModelDiffersMaterially(rescaled, storedM, storedBias));
+}
+
+void testOnlineApplyPathProducesAUsableModel() {
+	using namespace SlimeVR::Configuration;
+
+	// End to end through the shape the firmware uses: estimate from ordinary
+	// still moments, check plausibility, store, and confirm the stored model
+	// actually corrects the sensor it was estimated from.
+	const double gain[3] = {1.03, 0.97, 1.01};
+	const double bias[3] = {0.12, -0.08, 0.05};
+
+	OnlineErrorEstimator est;
+	for (int rep = 0; rep < 4; rep++) {
+		for (const auto& d : kAxisDirs) {
+			feedBlock(est, d, gain, bias);
+		}
+	}
+	ErrorModel model;
+	TRUE_(est.solve(static_cast<float>(kG), model));
+	TRUE_(checkAccelModel(model, static_cast<float>(kG)) == AccelModelStatus::Ok);
+
+	float aM[9] = {0};
+	float gM[9] = {0};
+	float aOff[3] = {0, 0, 0};
+	bool accelCalibrated[3] = {false, false, false};
+	storeAccelModel(model, false, aM, gM, aOff, accelCalibrated);
+
+	// The gyro matrix hazard applies on this path too: an online estimate sets
+	// errorModelValid, and a never-fitted G_M would go live as a zero matrix.
+	const bool gyroIsIdentity = gM[0] == 1.0f && gM[4] == 1.0f && gM[8] == 1.0f;
+	TRUE_(gyroIsIdentity);
+
+	double worst = 0;
+	for (const auto& d : kAxisDirs) {
+		const double t[3] = {d[0] * kG, d[1] * kG, d[2] * kG};
+		float raw[3];
+		corrupt(t, gain, 0.0, bias, raw);
+		const float dv[3] = {raw[0] - aOff[0], raw[1] - aOff[1], raw[2] - aOff[2]};
+		const float c[3] = {
+			aM[0] * dv[0] + aM[1] * dv[1] + aM[2] * dv[2],
+			aM[3] * dv[0] + aM[4] * dv[1] + aM[5] * dv[2],
+			aM[6] * dv[0] + aM[7] * dv[1] + aM[8] * dv[2],
+		};
+		worst = std::max(
+			worst,
+			std::fabs(std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]) - kG)
+		);
+	}
+	TRUE_(worst < 5e-3);
+}
+
 int main() {
 	testQuatBasics();
 	testIntegration();
@@ -2616,6 +2724,9 @@ int main() {
 	testOnlineReadinessConditionsAreIndependent();
 	testOnlineStateIsBounded();
 	testOnlineSurvivesNoise();
+	testOnlineEstimatePrecedence();
+	testOnlinePersistenceIsRateLimited();
+	testOnlineApplyPathProducesAUsableModel();
 
 	if (gFailures == 0) {
 		std::printf("selftest: %d checks passed\n", gChecks);

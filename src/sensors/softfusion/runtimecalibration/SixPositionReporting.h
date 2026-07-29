@@ -185,6 +185,9 @@ inline bool fitAndStore(
 		calibration.accelCalibrated
 	);
 	calibration.errorModelValid = true;
+	// Deliberate: from here on the online estimator defers to this rather than
+	// refreshing it, because a user chose to run the procedure.
+	calibration.errorModelFromOnline = false;
 
 	logger.info("Accel bias: %f %f %f", model.bias[0], model.bias[1], model.bias[2]);
 	logger.info("Accel scale: %f %f %f", model.m[0], model.m[4], model.m[8]);
@@ -202,7 +205,8 @@ inline bool fitAndStore(
 inline void applyToActive(
 	Logging::Logger& logger,
 	const Configuration::RuntimeCalibrationSensorConfig& calibration,
-	Configuration::RuntimeCalibrationSensorConfig& active
+	Configuration::RuntimeCalibrationSensorConfig& active,
+	bool announce = true
 ) {
 	for (size_t i = 0; i < 9; i++) {
 		active.A_M[i] = calibration.A_M[i];
@@ -213,7 +217,11 @@ inline void applyToActive(
 		active.accelCalibrated[i] = true;
 	}
 	active.errorModelValid = true;
-	logger.info("Accelerometer calibration applied");
+	// The online path applies repeatedly and quietly; only a deliberate
+	// calibration is worth a line in the log every time.
+	if (announce) {
+		logger.info("Accelerometer calibration applied");
+	}
 }
 
 inline void logStoredButNotApplied(Logging::Logger& logger) {

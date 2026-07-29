@@ -185,6 +185,9 @@ void cmdSetGyroScale(CmdParser* parser) {
 	const bool discarded
 		= buildGyroScaleModel(scale, cal.errorModelValid, cal.A_M, cal.G_M);
 	cal.errorModelValid = true;
+	// A typed-in scale is a deliberate act; the online estimator must not
+	// quietly undo it on the next observation.
+	cal.errorModelFromOnline = false;
 
 	configuration.setSensor(static_cast<size_t>(sensorId), config);
 	configuration.save();

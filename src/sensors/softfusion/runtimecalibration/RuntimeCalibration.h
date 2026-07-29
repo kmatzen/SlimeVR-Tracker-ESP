@@ -176,6 +176,16 @@ public:
 		}
 #endif
 
+#if ONLINE_ACCEL_ESTIMATION
+		// Solving is a 6x6 elimination in soft-float doubles, so it waits for
+		// the estimate to have actually moved rather than running every tick.
+		// Observations are rare -- one per distinct resting orientation -- so
+		// this fires a few times a day, not a few times a second.
+		if (observationsSinceApply >= onlineApplyEveryObservations) {
+			applyOnlineEstimateIfAllowed();
+		}
+#endif
+
 		if (skippedAStep && !lastTickRest && fusion.getRestDetected()) {
 			computeNextCalibrationStep();
 			skippedAStep = false;
@@ -324,8 +334,11 @@ public:
 			static_cast<float>(accelSample[1]) * static_cast<float>(Consts::AScale),
 			static_cast<float>(accelSample[2]) * static_cast<float>(Consts::AScale),
 		};
-		onlineEstimator
-			.feed(scaled, fusion.getRestDetected(), SixPositionReport::kGravity);
+		if (onlineEstimator
+				.feed(scaled, fusion.getRestDetected(), SixPositionReport::kGravity)
+			== SoftFusion::OnlineErrorEstimator::Result::Observed) {
+			observationsSinceApply++;
+		}
 #endif
 
 		if (isCalibrating) {
@@ -335,14 +348,83 @@ public:
 
 #if ONLINE_ACCEL_ESTIMATION
 	/**
-	 * Reports what the online estimator currently believes, without applying it.
+	 * Applies the online estimate, if it is this estimator's business to.
 	 *
-	 * Deliberately read-only for now. Whether a continuously updated estimate
-	 * should be applied on its own is a behavioural decision rather than a
-	 * technical one -- the tracker would be silently re-calibrating itself
-	 * while worn -- so the estimate is exposed and left for a human to act on
-	 * until that is settled.
+	 * A deliberate calibration always wins -- see `onlineEstimateMayApply`. The
+	 * estimator fills a vacuum and refreshes its own previous answer, and does
+	 * nothing at all to a tracker whose owner has run `CALIBRATE ACCEL`.
+	 *
+	 * The applied copy is updated whenever the estimate is ready; flash is
+	 * written only when the change would matter. Persisting every refinement
+	 * would mean several LittleFS writes a day for the life of the tracker, to
+	 * record differences far below anything tracking can see.
 	 */
+	void applyOnlineEstimateIfAllowed() {
+		observationsSinceApply = 0;
+
+		if (!Configuration::onlineEstimateMayApply(
+				calibration.errorModelValid,
+				calibration.errorModelFromOnline
+			)) {
+			return;
+		}
+		if (!toggles.getToggle(SensorToggles::CalibrationEnabled)) {
+			return;
+		}
+
+		SoftFusion::ErrorModel model;
+		if (!onlineEstimator.solve(SixPositionReport::kGravity, model)) {
+			return;
+		}
+		if (Configuration::checkAccelModel(model, SixPositionReport::kGravity)
+			!= Configuration::AccelModelStatus::Ok) {
+			return;
+		}
+
+		const bool worthSaving = !calibration.errorModelValid
+							  || Configuration::accelModelDiffersMaterially(
+								  model,
+								  calibration.A_M,
+								  calibration.A_off
+							  );
+		const bool firstTime = !calibration.errorModelValid;
+
+		Configuration::storeAccelModel(
+			model,
+			calibration.errorModelValid,
+			calibration.A_M,
+			calibration.G_M,
+			calibration.A_off,
+			calibration.accelCalibrated
+		);
+		calibration.errorModelValid = true;
+		calibration.errorModelFromOnline = true;
+
+		SixPositionReport::applyToActive(logger, calibration, activeCalibration, false);
+
+		if (worthSaving) {
+			saveCalibration();
+		}
+		if (firstTime) {
+			logger.info(
+				"Sensor[%d] accelerometer calibrated from ordinary use: bias %.4f "
+				"%.4f %.4f, scale %.4f %.4f %.4f",
+				sensorId,
+				model.bias[0],
+				model.bias[1],
+				model.bias[2],
+				model.m[0],
+				model.m[4],
+				model.m[8]
+			);
+			logger.info(
+				"Run CALIBRATE ACCEL for a deliberate calibration; it will take "
+				"precedence and this will stop updating"
+			);
+		}
+	}
+
+	/// Reports what the online estimator currently believes.
 	void printOnlineEstimate() final {
 		logger.info(
 			"Sensor[%d] online accel estimate: %.1f observations, spread %.3f, "
@@ -362,7 +444,7 @@ public:
 			return;
 		}
 		logger.info(
-			"  bias %.4f %.4f %.4f  scale %.4f %.4f %.4f",
+			"  online: bias %.4f %.4f %.4f  scale %.4f %.4f %.4f",
 			model.bias[0],
 			model.bias[1],
 			model.bias[2],
@@ -370,13 +452,34 @@ public:
 			model.m[4],
 			model.m[8]
 		);
+		if (calibration.errorModelValid) {
+			logger.info(
+				"  stored: bias %.4f %.4f %.4f  scale %.4f %.4f %.4f (%s)",
+				calibration.A_off[0],
+				calibration.A_off[1],
+				calibration.A_off[2],
+				calibration.A_M[0],
+				calibration.A_M[4],
+				calibration.A_M[8],
+				calibration.errorModelFromOnline ? "from this estimator"
+												 : "deliberate -- takes precedence"
+			);
+		}
+
 		const auto status
 			= Configuration::checkAccelModel(model, SixPositionReport::kGravity);
 		if (status != Configuration::AccelModelStatus::Ok) {
 			logger.warn(
-				"  implausible (%s) -- not offered",
+				"  implausible (%s) -- not applied",
 				Configuration::accelModelStatusToString(status)
 			);
+			return;
+		}
+		if (!Configuration::onlineEstimateMayApply(
+				calibration.errorModelValid,
+				calibration.errorModelFromOnline
+			)) {
+			logger.info("  not applied: a deliberate calibration is stored");
 		}
 	}
 #endif
@@ -652,7 +755,11 @@ private:
 #endif
 
 #if ONLINE_ACCEL_ESTIMATION
+	/// New observations before the estimate is re-solved and possibly applied.
+	static constexpr uint8_t onlineApplyEveryObservations = 4;
+
 	SoftFusion::OnlineErrorEstimator onlineEstimator;
+	uint8_t observationsSinceApply = 0;
 #endif
 
 	bool isCalibrating = false;
