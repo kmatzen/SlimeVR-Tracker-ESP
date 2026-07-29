@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "dataset.h"
+#include "gyroscale.h"
 #include "metrics.h"
 #include "quatmath.h"
 #include "synth.h"
@@ -1061,6 +1062,158 @@ void testSmallestEigenvalueOfKnownMatrices() {
 	NEAR(smallestEigenvalue3(rot), 1.0, 1e-9);
 }
 
+// Builds a rest-move-rest capture with a known gyroscope scale error.
+//
+// `readsHigh` is the factor by which the gyroscope over-reports each axis, so
+// the estimator should recover scale = 1/readsHigh.
+static Dataset makeScaleCapture(
+	const double readsHigh[3],
+	const std::vector<std::array<double, 4>>& moves,  // axis xyz + angle (rad)
+	double rateHz = 200.0
+) {
+	Dataset ds;
+	ds.gyrTs = 1.0 / rateHz;
+	ds.accTs = 1.0 / rateHz;
+	ds.hasGroundTruth = false;
+	ds.name = "synthetic-scale";
+
+	Quat q{1, 0, 0, 0};
+	uint64_t t = 0;
+	const double dt = 1.0 / rateHz;
+
+	auto emit = [&](const Vec3& omegaTrue) {
+		Sample s;
+		s.tUs = t;
+		s.hasAcc = true;
+		s.hasGyr = true;
+		// Accelerometer sees gravity, which is +z in the world frame.
+		const Vec3 g = qRotateInv(q, Vec3{0, 0, kGravity});
+		s.acc = g;
+		s.gyr = Vec3{
+			omegaTrue.x * readsHigh[0],
+			omegaTrue.y * readsHigh[1],
+			omegaTrue.z * readsHigh[2],
+		};
+		ds.samples.push_back(s);
+		q = qIntegrate(q, omegaTrue, dt);
+		t += static_cast<uint64_t>(std::llround(dt * 1e6));
+	};
+
+	auto rest = [&](double seconds) {
+		const int n = static_cast<int>(seconds * rateHz);
+		for (int i = 0; i < n; i++) {
+			emit(Vec3{0, 0, 0});
+		}
+	};
+
+	rest(1.0);
+	for (const auto& m : moves) {
+		const double seconds = 1.0;
+		const int n = static_cast<int>(seconds * rateHz);
+		const double rate = m[3] / seconds;
+		for (int i = 0; i < n; i++) {
+			emit(Vec3{m[0] * rate, m[1] * rate, m[2] * rate});
+		}
+		rest(1.0);
+	}
+	return ds;
+}
+
+void testGyroScaleRecoversKnownError() {
+	// The term bias calibration cannot see: it only shows up while rotating.
+	const double readsHigh[3] = {1.03, 0.98, 1.015};
+	// Rotations about each axis, tilting the tracker so gravity actually moves.
+	const std::vector<std::array<double, 4>> moves = {
+		{1, 0, 0, deg2rad(90)},
+		{0, 1, 0, deg2rad(90)},
+		{1, 0, 0, deg2rad(-90)},
+		{0, 1, 0, deg2rad(-90)},
+		{1, 0, 0, deg2rad(120)},
+		{0, 1, 0, deg2rad(120)},
+		{1, 0, 0, deg2rad(-120)},
+		{0, 1, 0, deg2rad(-120)},
+		{0, 0, 1, deg2rad(150)},
+		{1, 0, 0, deg2rad(80)},
+		{0, 0, 1, deg2rad(-150)},
+		{0, 1, 0, deg2rad(80)},
+	};
+	const Dataset ds = makeScaleCapture(readsHigh, moves);
+
+	const GyroScaleResult r = estimateGyroScale(ds);
+	TRUE_(r.valid);
+	TRUE_(r.segments >= 8);
+	// Recovering the correction to within 0.3% is far tighter than the ~1%
+	// errors this exists to catch.
+	NEAR(r.scale[0], 1.0 / readsHigh[0], 0.003);
+	NEAR(r.scale[1], 1.0 / readsHigh[1], 0.003);
+	NEAR(r.scale[2], 1.0 / readsHigh[2], 0.003);
+	// And the fit must actually improve the gravity prediction.
+	TRUE_(r.residualAfterDeg < r.residualBeforeDeg / 3.0);
+}
+
+void testGyroScaleIsUnityForAPerfectSensor() {
+	// A clean sensor must not have error invented for it.
+	const double perfect[3] = {1.0, 1.0, 1.0};
+	const std::vector<std::array<double, 4>> moves = {
+		{1, 0, 0, deg2rad(90)},
+		{0, 1, 0, deg2rad(90)},
+		{1, 0, 0, deg2rad(-90)},
+		{0, 1, 0, deg2rad(-90)},
+		{0, 0, 1, deg2rad(140)},
+		{1, 0, 0, deg2rad(100)},
+		{0, 0, 1, deg2rad(-140)},
+		{0, 1, 0, deg2rad(100)},
+	};
+	const Dataset ds = makeScaleCapture(perfect, moves);
+	const GyroScaleResult r = estimateGyroScale(ds);
+	TRUE_(r.valid);
+	NEAR(r.scale[0], 1.0, 0.004);
+	NEAR(r.scale[1], 1.0, 0.004);
+	NEAR(r.scale[2], 1.0, 0.004);
+}
+
+void testGyroScaleRefusesWhenGravityNeverMoves() {
+	// Rotation about the gravity vector does not move gravity, so it carries no
+	// scale information at all. A capture of a tracker spun while sitting flat
+	// is worthless for this however long it runs -- and the estimator has to
+	// say so rather than return a confident number built from noise.
+	const double readsHigh[3] = {1.03, 1.03, 1.03};
+	const std::vector<std::array<double, 4>> spinOnly = {
+		{0, 0, 1, deg2rad(180)},
+		{0, 0, 1, deg2rad(-180)},
+		{0, 0, 1, deg2rad(180)},
+		{0, 0, 1, deg2rad(-180)},
+		{0, 0, 1, deg2rad(180)},
+		{0, 0, 1, deg2rad(-180)},
+	};
+	const Dataset ds = makeScaleCapture(readsHigh, spinOnly);
+	const GyroScaleResult r = estimateGyroScale(ds);
+	TRUE_(!r.valid);
+	TRUE_(!r.reason.empty());
+}
+
+void testGyroScaleRefusesWithoutRestPeriods() {
+	// Gravity is only a usable reference when the tracker is still; without
+	// pauses there is nothing to compare the integration against.
+	Dataset ds;
+	ds.gyrTs = 1.0 / 200.0;
+	ds.accTs = ds.gyrTs;
+	Quat q{1, 0, 0, 0};
+	for (int i = 0; i < 4000; i++) {
+		Sample s;
+		s.tUs = static_cast<uint64_t>(i * 5000);
+		s.hasAcc = true;
+		s.hasGyr = true;
+		s.acc = qRotateInv(q, Vec3{0, 0, kGravity});
+		s.gyr = Vec3{deg2rad(60), 0, 0};
+		ds.samples.push_back(s);
+		q = qIntegrate(q, s.gyr, ds.gyrTs);
+	}
+	const GyroScaleResult r = estimateGyroScale(ds);
+	TRUE_(!r.valid);
+	TRUE_(!r.reason.empty());
+}
+
 }  // namespace
 
 int main() {
@@ -1097,6 +1250,10 @@ int main() {
 	testFitRejectsDegenerateOrientations();
 	testFitRejectsNearDegenerateCoverage();
 	testFitAcceptsSixPositionCoverage();
+	testGyroScaleRecoversKnownError();
+	testGyroScaleIsUnityForAPerfectSensor();
+	testGyroScaleRefusesWhenGravityNeverMoves();
+	testGyroScaleRefusesWithoutRestPeriods();
 	testSmallestEigenvalueOfKnownMatrices();
 
 	if (gFailures == 0) {

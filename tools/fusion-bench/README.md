@@ -244,6 +244,62 @@ Measures accumulated heading error, which is the thing users actually feel.
 That difference is accumulated error. It is directly comparable to
 `final_heading_error_deg` from the synthetic `return-to-origin` case.
 
+### Test C2 — gyroscope scale factor
+
+Measures the error term rest-gated bias calibration cannot see. Bias dominates a
+*stationary* sensor and is estimated at rest; scale factor produces error
+proportional to rotation **angle** and is therefore invisible at rest, because
+there is no rotation to scale. A 1% error puts you 1.8° out after a 180° turn,
+however good the bias estimate is.
+
+`fusion-bench gyro-scale` estimates it from an ordinary capture — no turntable
+required. Whenever the tracker is still, the accelerometer gives the gravity
+direction exactly; between two such pauses the gyroscope says how far it thinks
+the tracker turned, and that prediction can be checked against where gravity
+actually ended up. A scale error makes the prediction miss.
+
+**Capture protocol.** Roughly two minutes, by hand, no fixture:
+
+1. Rest the tracker on the desk for 2 seconds. **The pauses are the measurement**
+   — without them there is no reference.
+2. Turn it about 90° about one axis, taking about a second.
+3. Rest 2 seconds again.
+4. Repeat 10–15 times, **varying which axis you turn about**, and make sure the
+   tracker ends up genuinely tilted rather than always flat.
+
+```sh
+./build/fusion-bench gyro-scale capture.csv
+```
+
+```
+rest-to-rest transitions used: 12
+gravity prediction error: 2.140 deg before, 0.089 deg after
+observability (deg per 1% of scale): x 0.412  y 0.388  z 0.244
+
+scale (multiply measured rate by this):
+  x 0.97087  y 1.02041  z 0.98522
+gyroscope reads high by: x +3.000%  y -2.000%  z +1.500%
+```
+
+**What it cannot see, and why it will tell you so.** Rotation *about* the gravity
+vector does not move gravity, so it carries no scale information at all. A
+capture of a tracker spun while sitting flat is worthless for this however long
+it runs. The estimator reports per-axis observability and refuses rather than
+returning a confident number built from noise:
+
+```
+no usable estimate: axis Z was never rotated in a way that moves gravity
+```
+
+It exits non-zero when it refuses, so it can be scripted. Running it on the
+static Bench Test A capture correctly reports `fewer than two settled rest
+periods` — that capture has no motion at all.
+
+**Relationship to the turntable.** The turntable measures a full known rotation
+about one axis and is the better reference for a single axis. This is
+complementary: it needs no fixture, covers all three axes in one capture, and is
+something a user can actually be asked to do.
+
 ### Test D — temperature ramp
 
 The firmware has temperature-gradient compensation and nothing currently proves

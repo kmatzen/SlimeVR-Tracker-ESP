@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "dataset.h"
+#include "gyroscale.h"
 #include "metrics.h"
 #include "synth.h"
 
@@ -38,6 +39,7 @@ int usage() {
 		"  fusion-bench gen TRAJECTORY OUT.csv [options]\n"
 		"  fusion-bench run DATASET.csv [options]\n"
 		"  fusion-bench sweep DATASET.csv PARAM FROM TO STEPS\n"
+		"  fusion-bench gyro-scale DATASET.csv\n"
 		"\ntrajectories: %s\n"
 		"sweep params: tau-acc, rest-th-gyr, rest-th-acc, rest-min-t\n",
 		trajectories.c_str()
@@ -444,6 +446,55 @@ int cmdSweep(int argc, char** argv) {
 	return 0;
 }
 
+int cmdGyroScale(int argc, char** argv) {
+	if (argc < 3) {
+		return usage();
+	}
+	Dataset ds;
+	std::string err;
+	if (!loadDataset(argv[2], ds, err)) {
+		std::fprintf(stderr, "%s\n", err.c_str());
+		return 1;
+	}
+
+	const GyroScaleResult r = estimateGyroScale(ds);
+
+	std::printf("rest-to-rest transitions used: %d\n", r.segments);
+	std::printf(
+		"gravity prediction error: %.3f deg before, %.3f deg after\n",
+		r.residualBeforeDeg,
+		r.residualAfterDeg
+	);
+	std::printf(
+		"observability (deg per 1%% of scale): x %.3f  y %.3f  z %.3f\n",
+		r.observability[0],
+		r.observability[1],
+		r.observability[2]
+	);
+
+	if (!r.valid) {
+		// Refusing is the useful answer here. A scale factor fitted from motion
+		// that never moved gravity is noise wearing a number's clothes.
+		std::fprintf(stderr, "no usable estimate: %s\n", r.reason.c_str());
+		return 1;
+	}
+
+	std::printf(
+		"\nscale (multiply measured rate by this):\n"
+		"  x %.5f  y %.5f  z %.5f\n",
+		r.scale[0],
+		r.scale[1],
+		r.scale[2]
+	);
+	std::printf(
+		"gyroscope reads high by: x %+.3f%%  y %+.3f%%  z %+.3f%%\n",
+		(1.0 / r.scale[0] - 1.0) * 100.0,
+		(1.0 / r.scale[1] - 1.0) * 100.0,
+		(1.0 / r.scale[2] - 1.0) * 100.0
+	);
+	return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -462,6 +513,9 @@ int main(int argc, char** argv) {
 	}
 	if (cmd == "sweep") {
 		return cmdSweep(argc, argv);
+	}
+	if (cmd == "gyro-scale") {
+		return cmdGyroScale(argc, argv);
 	}
 	return usage();
 }
