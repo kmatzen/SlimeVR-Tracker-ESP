@@ -463,11 +463,38 @@ bool Connection::sendRawSampleStreamInfo(
 	});
 }
 
+bool Connection::sendRawSampleStats(
+	uint8_t sensorId,
+	const uint32_t counters[8],
+	uint32_t accSequence,
+	uint32_t gyrSequence,
+	uint16_t accBuffered,
+	uint16_t gyrBuffered
+) {
+	if (!m_Connected || !m_ServerFeatures.has(ServerFeatures::PROTOCOL_RAW_SAMPLES)) {
+		return false;
+	}
+
+	return sendPacketCallback(SendPacketType::RawSampleBatch, [&]() {
+		MUST_TRANSFER_BOOL(sendByte(static_cast<uint8_t>(RawSampleBatchType::Stats)));
+		MUST_TRANSFER_BOOL(sendByte(sensorId));
+		for (uint8_t i = 0; i < 8; i++) {
+			MUST_TRANSFER_BOOL(sendInt(counters[i]));
+		}
+		MUST_TRANSFER_BOOL(sendInt(accSequence));
+		MUST_TRANSFER_BOOL(sendInt(gyrSequence));
+		MUST_TRANSFER_BOOL(sendShort(accBuffered));
+		MUST_TRANSFER_BOOL(sendShort(gyrBuffered));
+		return true;
+	});
+}
+
 bool Connection::sendRawSampleBatch(
 	uint8_t sensorId,
 	RawSampleKind kind,
 	uint32_t sequence,
 	uint32_t dropped,
+	uint32_t fifoDropped,
 	uint64_t baseNominalMicros,
 	uint32_t realMicros,
 	uint16_t count,
@@ -483,6 +510,7 @@ bool Connection::sendRawSampleBatch(
 		MUST_TRANSFER_BOOL(sendByte(static_cast<uint8_t>(kind)));
 		MUST_TRANSFER_BOOL(sendInt(sequence));
 		MUST_TRANSFER_BOOL(sendInt(dropped));
+		MUST_TRANSFER_BOOL(sendInt(fifoDropped));
 		MUST_TRANSFER_BOOL(sendLong(baseNominalMicros));
 		MUST_TRANSFER_BOOL(sendInt(realMicros));
 		MUST_TRANSFER_BOOL(sendShort(count));

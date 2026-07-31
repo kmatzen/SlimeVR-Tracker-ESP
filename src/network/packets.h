@@ -107,6 +107,13 @@ enum class RawSampleBatchType : uint8_t {
 	StreamInfo = 0,
 	// A run of contiguous samples from one stream.
 	Samples = 1,
+	// What the streamer has actually done since the capture started.
+	//
+	// Sent over the network rather than printed, because reading the tracker's
+	// serial port resets an ESP8266 and so ends the very capture being
+	// diagnosed. Carries the firmware's own batch sequence numbers, which is
+	// what distinguishes "the tracker skipped one" from "the network lost one".
+	Stats = 2,
 };
 
 enum class InspectionPacketType : uint8_t {

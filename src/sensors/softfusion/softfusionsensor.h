@@ -101,7 +101,16 @@ class SoftFusionSensor : public Sensor {
 		// measures the true sample periods seconds after boot, so a value taken
 		// during motionSetup() is the datasheet nominal. Every sample time in
 		// the resulting .imu is derived from it.
-		if (streaming) {
+		// Only on an actual start. The server repeats the start command for the
+		// length of a capture, because a single UDP datagram is not reliable --
+		// so this is called once a second, and re-baselining each time walked
+		// the baseline past the counter it is subtracted from. The result
+		// underflowed to 4294967294 and, server-side, made every batch look
+		// discontinuous.
+		if (streaming && !m_rawStreamer.isStreaming()) {
+			// Overruns from before the capture are not the capture's, so the
+			// cumulative counter is baselined rather than zeroed.
+			m_rawStreamer.setFifoBaseline(m_fifoOverrunCount);
 			m_rawStreamer.setTimebase(
 				calibrator.getAccelTimestep(),
 				calibrator.getGyroTimestep(),
@@ -360,6 +369,9 @@ public:
 		if (overwhelmed) {
 			calibrator.signalOverwhelmed();
 			m_fifoOverrunCount++;
+			// Told immediately, not at the next send: the streamer has to place
+			// the hole between two batches while it still knows where it is.
+			m_rawStreamer.noteFifoOverruns(m_fifoOverrunCount);
 		}
 
 		if (m_fusion.isUpdated()) {

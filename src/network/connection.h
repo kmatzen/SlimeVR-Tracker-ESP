@@ -115,6 +115,20 @@ public:
 		float gyrScale
 	);
 
+	// PACKET_RAW_SAMPLE_BATCH 30, subtype Stats.
+	//
+	// Diagnostic counters for a running capture. Over the network because
+	// serial is not usable here: attaching a monitor resets the ESP8266, which
+	// ends the capture and destroys the thing being measured.
+	bool sendRawSampleStats(
+		uint8_t sensorId,
+		const uint32_t counters[8],
+		uint32_t accSequence,
+		uint32_t gyrSequence,
+		uint16_t accBuffered,
+		uint16_t gyrBuffered
+	);
+
 	// PACKET_RAW_SAMPLE_BATCH 30, subtype Samples.
 	//
 	// `baseNominalMicros` is the nominal time of the first sample, accumulated
@@ -124,13 +138,18 @@ public:
 	// actual ODR stays measurable -- the same pairing `RawSampleLogger`'s
 	// `# t_real` marker exists for.
 	//
-	// `dropped` is cumulative for this stream. It is the difference between a
-	// capture the server can trust and one it must mark holes in.
+	// `dropped` is cumulative for this stream, and `fifoDropped` is cumulative
+	// for the sensor -- samples the hardware FIFO discarded before the firmware
+	// ever saw them. They are separate because the causes are: the network path
+	// could not keep up, versus the sensor drain loop could not. Between them
+	// they are the difference between a capture the server can trust and one it
+	// must mark holes in.
 	bool sendRawSampleBatch(
 		uint8_t sensorId,
 		RawSampleKind kind,
 		uint32_t sequence,
 		uint32_t dropped,
+		uint32_t fifoDropped,
 		uint64_t baseNominalMicros,
 		uint32_t realMicros,
 		uint16_t count,
