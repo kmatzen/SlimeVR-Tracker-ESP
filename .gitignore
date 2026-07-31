@@ -8,3 +8,6 @@ compile_commands.json
 node_modules/
 dist/
 .nix-platformio
+
+# Agent worktrees live here and must never be committed.
+.claude/worktrees/
