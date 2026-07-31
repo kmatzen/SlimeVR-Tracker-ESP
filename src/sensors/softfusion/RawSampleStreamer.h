@@ -133,6 +133,10 @@ public:
 	 * and since every sample time in the `.imu` is derived from this number, it
 	 * would be wrong for the whole file.
 	 */
+	/** Overruns already counted before a capture starts, so they are not blamed on it.
+	 */
+	void setFifoBaseline(uint32_t total) { m_fifoBaseline = total; }
+
 	void setTimebase(float accTs, float gyrTs, float accScale, float gyrScale) {
 		m_accTs = accTs;
 		m_gyrTs = gyrTs;
@@ -162,10 +166,57 @@ public:
 			m_gyrNanos = 0;
 			m_lastInfoMicros = 0;
 			m_lastFlushMicros = micros();
+			// Taken as the baseline rather than zeroed: the counter is cumulative
+			// since boot, and a capture only cares about overruns during itself.
+			m_fifoDropped = m_fifoBaseline;
+			m_fifoPending = m_fifoBaseline;
 		}
 	}
 
 	[[nodiscard]] bool isStreaming() const { return m_streaming; }
+
+	/**
+	 * The sensor's FIFO overran, so samples were lost before this saw them.
+	 *
+	 * This is the one hole the rest of the design cannot detect. `bulkRead`
+	 * reports the sensor's hardware FIFO having already discarded samples, which
+	 * means they never reached `processGyroSample` and so never reached here.
+	 * Nothing else notices:
+	 *
+	 * - the buffer drop counter only knows about *this* buffer
+	 * - the batch sequence is unbroken, because those batches were produced
+	 *   normally
+	 * - the nominal clock advances only for samples actually processed, so the
+	 *   timeline closes over the hole rather than showing it
+	 *
+	 * The result would be a capture that reports itself complete while missing
+	 * data -- exactly the failure the batching rules exist to prevent, arriving
+	 * by a path they do not cover.
+	 *
+	 * So the count is carried to the server, and the pending batch is sent
+	 * *before* the count changes. Placement matters as much as counting: it puts
+	 * the hole between two batches, where the server already knows how to mark
+	 * it, rather than inside one where the samples either side would look
+	 * adjacent.
+	 *
+	 * **Only the flag is set here.** This runs inside `motionLoop`, straight off
+	 * the FIFO drain, and sending a datagram from that path resets the ESP8266 --
+	 * measured, not feared: the tracker rebooted repeatedly and a 12 s capture
+	 * yielded 35 samples instead of ~4300. The send is left to [flush], which is
+	 * the only place this class is allowed to touch the network.
+	 *
+	 * The cost is a bounded imprecision. Samples pushed between the overrun and
+	 * the next flush land in the batch that is about to be closed, so they are
+	 * labelled as before the hole when they are really after it. `flush` runs
+	 * from `sendData` at the network send rate, so that window is a few
+	 * milliseconds -- on the order of one accelerometer and two gyroscope
+	 * samples. Worth stating rather than hiding: the hole's *existence* and its
+	 * *count* are exact, its position is accurate to a few samples.
+	 *
+	 * Observed on an idle tracker at roughly 20 overruns per minute, so this is
+	 * the ordinary case rather than an edge one.
+	 */
+	void noteFifoOverruns(uint32_t total) { m_fifoPending = total; }
 
 	void logAccel(const RawSensorT xyz[3]) {
 		if (!m_streaming) {
@@ -228,6 +279,26 @@ public:
 		if (sent) {
 			m_lastFlushMicros = now;
 		}
+
+		// The new overrun count is adopted only once both buffers are empty --
+		// that is, immediately after a send -- so the batch that reports it is
+		// the first one containing no pre-hole samples. The server splits on the
+		// change, and the split lands on a batch boundary.
+		//
+		// Deliberately *not* forced. An earlier attempt made a pending overrun
+		// force an immediate partial send, and on hardware that fed back: the
+		// tracker overruns often enough that nearly every flush became partial,
+		// which recreated the packet flood #25 removed, which starved the drain
+		// loop, which caused more overruns. A 15 s capture yielded 44 samples.
+		//
+		// The cost of waiting is that the hole is located to the nearest batch
+		// boundary -- 67 ms for the gyroscope, 133 ms for the accelerometer --
+		// rather than to the sample. The hole's existence and its size stay
+		// exact; only its position is coarse, and it is coarse in a file that
+		// marks it rather than in one that hides it.
+		if (m_acc.empty() && m_gyr.empty()) {
+			m_fifoDropped = m_fifoPending;
+		}
 	}
 
 private:
@@ -254,6 +325,7 @@ private:
 			kind,
 			stream.sequence(),
 			stream.dropped(),
+			m_fifoDropped - m_fifoBaseline,
 			stream.baseMicros(),
 			realMicros,
 			stream.count(),
@@ -277,6 +349,9 @@ private:
 	uint64_t m_gyrNanos = 0;
 	uint32_t m_lastInfoMicros = 0;
 	uint32_t m_lastFlushMicros = 0;
+	uint32_t m_fifoDropped = 0;
+	uint32_t m_fifoPending = 0;
+	uint32_t m_fifoBaseline = 0;
 	Stream m_acc;
 	Stream m_gyr;
 };
@@ -307,6 +382,8 @@ public:
 
 	void begin(uint8_t, const char*) {}
 	void setTimebase(float, float, float, float) {}
+	void setFifoBaseline(uint32_t) {}
+	void noteFifoOverruns(uint32_t) {}
 	void setStreaming(bool) {}
 	[[nodiscard]] bool isStreaming() const { return false; }
 	void logAccel(const RawSensorT*) {}

@@ -124,13 +124,18 @@ public:
 	// actual ODR stays measurable -- the same pairing `RawSampleLogger`'s
 	// `# t_real` marker exists for.
 	//
-	// `dropped` is cumulative for this stream. It is the difference between a
-	// capture the server can trust and one it must mark holes in.
+	// `dropped` is cumulative for this stream, and `fifoDropped` is cumulative
+	// for the sensor -- samples the hardware FIFO discarded before the firmware
+	// ever saw them. They are separate because the causes are: the network path
+	// could not keep up, versus the sensor drain loop could not. Between them
+	// they are the difference between a capture the server can trust and one it
+	// must mark holes in.
 	bool sendRawSampleBatch(
 		uint8_t sensorId,
 		RawSampleKind kind,
 		uint32_t sequence,
 		uint32_t dropped,
+		uint32_t fifoDropped,
 		uint64_t baseNominalMicros,
 		uint32_t realMicros,
 		uint16_t count,

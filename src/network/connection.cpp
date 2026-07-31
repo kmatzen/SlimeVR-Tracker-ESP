@@ -468,6 +468,7 @@ bool Connection::sendRawSampleBatch(
 	RawSampleKind kind,
 	uint32_t sequence,
 	uint32_t dropped,
+	uint32_t fifoDropped,
 	uint64_t baseNominalMicros,
 	uint32_t realMicros,
 	uint16_t count,
@@ -483,6 +484,7 @@ bool Connection::sendRawSampleBatch(
 		MUST_TRANSFER_BOOL(sendByte(static_cast<uint8_t>(kind)));
 		MUST_TRANSFER_BOOL(sendInt(sequence));
 		MUST_TRANSFER_BOOL(sendInt(dropped));
+		MUST_TRANSFER_BOOL(sendInt(fifoDropped));
 		MUST_TRANSFER_BOOL(sendLong(baseNominalMicros));
 		MUST_TRANSFER_BOOL(sendInt(realMicros));
 		MUST_TRANSFER_BOOL(sendShort(count));
