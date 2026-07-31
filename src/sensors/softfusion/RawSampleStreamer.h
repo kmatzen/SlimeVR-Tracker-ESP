@@ -93,17 +93,52 @@ public:
 	static constexpr bool Enabled = true;
 
 	/**
+	 * Bytes an inner bundle packet may occupy.
+	 *
+	 * `Connection::write` buffers inner packets into a 128-byte array and
+	 * returns 0 -- failure -- the moment one would not fit. `MUST_TRANSFER_BOOL`
+	 * then abandons the send. **Nothing is logged and nothing is counted**: the
+	 * batch simply never leaves, and both sides look healthy.
+	 *
+	 * That is not hypothetical. Adding one four-byte field to the batch header
+	 * took it from 125 bytes to 129, and raw capture stopped working entirely --
+	 * every capture produced zero samples while rotation data flowed normally.
+	 * It cost an afternoon to find, because the symptom is silence.
+	 */
+	static constexpr uint16_t InnerPacketLimit = 128;
+
+	/** 4-byte packet type, then the fields `sendRawSampleBatch` writes. */
+	static constexpr uint16_t BatchHeaderBytes = 4 + 1 + 1 + 1 + 4 + 4 + 4 + 8 + 4 + 2;
+
+	/**
 	 * Samples buffered per stream before a flush is forced.
 	 *
-	 * At the fastest configured gyroscope rate in the tree (LSM6DSV, 240 Hz)
-	 * this fills in ~67 ms, so a batch leaves well inside the interval the
-	 * server's own bundling already works on. Sized in samples rather than in
-	 * time because the buffer is what must not overflow.
+	 * Bounded by [InnerPacketLimit] rather than chosen: at three `int16` per
+	 * sample, this is what fits with room to spare. Twelve fills in ~50 ms at
+	 * the LSM6DSV's 240 Hz gyroscope rate, so batches still leave full and the
+	 * packet rate stays near the ~20 per second per stream the design assumes.
 	 */
-	static constexpr uint16_t BatchCapacity = 16;
+	static constexpr uint16_t BatchCapacity = 12;
+
+	static_assert(
+		BatchHeaderBytes + BatchCapacity * 3 * sizeof(int16_t) <= InnerPacketLimit,
+		"a raw sample batch must fit the inner-bundle buffer, or it is dropped "
+		"silently -- see InnerPacketLimit"
+	);
 
 	/** How often the stream's metadata is repeated, in microseconds. */
 	static constexpr uint32_t InfoIntervalMicros = 2000000;
+
+	/**
+	 * How often the counters below are printed while a capture runs.
+	 *
+	 * Cheap and always on. Every failure of this feature so far has been
+	 * diagnosed by inference from what the *server* received, and the last one
+	 * resisted that entirely -- a capture produced no raw samples and nothing on
+	 * either side said which of "no samples pushed", "no flush called", "nothing
+	 * sent" or "sent and lost" was true. These distinguish them.
+	 */
+	static constexpr uint32_t StatsIntervalMicros = 5000000;
 
 	/**
 	 * Longest a partly-filled batch waits before going out anyway.
@@ -166,6 +201,15 @@ public:
 			m_gyrNanos = 0;
 			m_lastInfoMicros = 0;
 			m_lastFlushMicros = micros();
+			m_lastStatsMicros = m_lastFlushMicros;
+			m_accPushes = 0;
+			m_gyrPushes = 0;
+			m_flushCalls = 0;
+			m_accBatches = 0;
+			m_gyrBatches = 0;
+			m_refusals = 0;
+			m_sendFailures = 0;
+			m_pushesWhileStopped = 0;
 			// Taken as the baseline rather than zeroed: the counter is cumulative
 			// since boot, and a capture only cares about overruns during itself.
 			m_fifoDropped = m_fifoBaseline;
@@ -220,16 +264,20 @@ public:
 
 	void logAccel(const RawSensorT xyz[3]) {
 		if (!m_streaming) {
+			m_pushesWhileStopped++;
 			return;
 		}
+		m_accPushes++;
 		m_accNanos += m_accStepNanos;
 		push(m_acc, m_accNanos / 1000, xyz);
 	}
 
 	void logGyro(const RawSensorT xyz[3]) {
 		if (!m_streaming) {
+			m_pushesWhileStopped++;
 			return;
 		}
+		m_gyrPushes++;
 		m_gyrNanos += m_gyrStepNanos;
 		push(m_gyr, m_gyrNanos / 1000, xyz);
 	}
@@ -246,6 +294,7 @@ public:
 		if (!m_streaming) {
 			return;
 		}
+		m_flushCalls++;
 
 		const uint32_t now = micros();
 		// Repeated rather than sent once. The transport is UDP, so a server that
@@ -299,6 +348,42 @@ public:
 		if (m_acc.empty() && m_gyr.empty()) {
 			m_fifoDropped = m_fifoPending;
 		}
+
+		reportStatsIfDue(now);
+	}
+
+	/**
+	 * Prints what the streamer has actually done, so a failed capture can be
+	 * read rather than guessed at.
+	 *
+	 * The four numbers that matter, in the order they would fail: pushes (did
+	 * samples reach the streamer at all), flushes (is the send path being
+	 * called), batches (did anything qualify to be sent), and refusals (was it
+	 * held back for not being full).
+	 */
+	void reportStatsIfDue(uint32_t now) {
+		if (now - m_lastStatsMicros < StatsIntervalMicros) {
+			return;
+		}
+		m_lastStatsMicros = now;
+		Serial.printf(
+			"[RawStream:%u] push a=%lu g=%lu | flush=%lu batch a=%lu g=%lu | "
+			"refused=%lu | buffered a=%u g=%u | fifo %lu->%lu base=%lu | "
+			"stopped-pushes=%lu\n",
+			m_sensorId,
+			static_cast<unsigned long>(m_accPushes),
+			static_cast<unsigned long>(m_gyrPushes),
+			static_cast<unsigned long>(m_flushCalls),
+			static_cast<unsigned long>(m_accBatches),
+			static_cast<unsigned long>(m_gyrBatches),
+			static_cast<unsigned long>(m_refusals),
+			m_acc.count(),
+			m_gyr.count(),
+			static_cast<unsigned long>(m_fifoDropped),
+			static_cast<unsigned long>(m_fifoPending),
+			static_cast<unsigned long>(m_fifoBaseline),
+			static_cast<unsigned long>(m_pushesWhileStopped)
+		);
 	}
 
 private:
@@ -318,6 +403,7 @@ private:
 			return false;
 		}
 		if (stream.count() < BatchCapacity && !due) {
+			m_refusals++;
 			return false;
 		}
 		const bool sent = networkConnection.sendRawSampleBatch(
@@ -332,7 +418,12 @@ private:
 			stream.samples()
 		);
 		stream.advance();
-		(void)sent;
+		if (kind == RawSampleKind::Accel) {
+			m_accBatches++;
+		} else {
+			m_gyrBatches++;
+		}
+		m_sendFailures += sent ? 0 : 1;
 		return true;
 	}
 
@@ -352,6 +443,15 @@ private:
 	uint32_t m_fifoDropped = 0;
 	uint32_t m_fifoPending = 0;
 	uint32_t m_fifoBaseline = 0;
+	uint32_t m_lastStatsMicros = 0;
+	uint32_t m_accPushes = 0;
+	uint32_t m_gyrPushes = 0;
+	uint32_t m_flushCalls = 0;
+	uint32_t m_accBatches = 0;
+	uint32_t m_gyrBatches = 0;
+	uint32_t m_refusals = 0;
+	uint32_t m_sendFailures = 0;
+	uint32_t m_pushesWhileStopped = 0;
 	Stream m_acc;
 	Stream m_gyr;
 };
