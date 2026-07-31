@@ -57,6 +57,9 @@ enum class SendPacketType : uint8_t {
 	// PositionData = 27,
 	TimeSync = 28,
 	RotationDataTimestamped = 29,
+	// Raw pre-calibration IMU samples, batched. Gated on the server
+	// advertising PROTOCOL_RAW_SAMPLES -- see issue #23.
+	RawSampleBatch = 30,
 	Bundle = 100,
 	Inspection = 105,
 };
@@ -72,6 +75,38 @@ enum class ReceivePacketType : uint8_t {
 	FeatureFlags = 22,
 	SetConfigFlag = 25,
 	TimeSync = 28,
+	// Start or stop raw sample streaming. Deliberately a command rather than a
+	// stored setting: nothing about a capture session is persisted, so the
+	// feature adds no SensorConfig field and costs nothing on boards that
+	// compile it out. See issue #23.
+	RawSampleControl = 30,
+};
+
+/**
+ * Which of a sensor's two raw streams a batch carries.
+ *
+ * Separate streams rather than one interleaved buffer: they run at different
+ * rates, and a single sequence number could not express "the gyroscope dropped
+ * samples and the accelerometer did not".
+ */
+enum class RawSampleKind : uint8_t {
+	Accel = 0,
+	Gyro = 1,
+};
+
+/**
+ * Which shape of RawSampleBatch packet follows.
+ *
+ * Mirrors the InspectionPacketType discriminator rather than spending a second
+ * packet id, because the two shapes belong to one stream and are useless apart.
+ */
+enum class RawSampleBatchType : uint8_t {
+	// Scale factors and nominal sample periods. Repeated periodically, since
+	// UDP means a server that joined late would otherwise hold counts it cannot
+	// convert into physical units.
+	StreamInfo = 0,
+	// A run of contiguous samples from one stream.
+	Samples = 1,
 };
 
 enum class InspectionPacketType : uint8_t {

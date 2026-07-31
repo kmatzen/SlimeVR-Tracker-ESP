@@ -33,6 +33,7 @@
 #include "../RestCalibrationDetector.h"
 #include "../sensor.h"
 #include "RawSampleLogger.h"
+#include "RawSampleStreamer.h"
 #include "TempGradientCalculator.h"
 #include "imuconsts.h"
 #include "motionprocessing/types.h"
@@ -88,7 +89,17 @@ class SoftFusionSensor : public Sensor {
 	void sendData() final {
 		Sensor::sendData();
 		sendTempIfNeeded();
+		// Flushed here so batches ride the bundle the rotation data is already
+		// going out in: an inner bundle packet costs three bytes of framing and
+		// the eight-byte packet number is written once per bundle.
+		m_rawStreamer.flush();
 	}
+
+#if RAW_SAMPLE_STREAMING
+	void setRawSampleStreaming(bool streaming) final {
+		m_rawStreamer.setStreaming(streaming);
+	}
+#endif
 
 	void sendTempIfNeeded() {
 		uint32_t now = micros();
@@ -112,6 +123,7 @@ class SoftFusionSensor : public Sensor {
 		// produced rather than what the current calibration made of it.
 		// Compiled away entirely unless RAW_SAMPLE_LOGGING is defined.
 		m_rawLogger.logAccel(xyz);
+		m_rawStreamer.logAccel(xyz);
 
 		sensor_real_t accelData[]
 			= {static_cast<sensor_real_t>(xyz[0]),
@@ -127,6 +139,7 @@ class SoftFusionSensor : public Sensor {
 
 	void processGyroSample(const RawSensorT xyz[3], const sensor_real_t timeDelta) {
 		m_rawLogger.logGyro(xyz);
+		m_rawStreamer.logGyro(xyz);
 
 		sensor_real_t gyroData[]
 			= {static_cast<sensor_real_t>(xyz[0]),
@@ -465,6 +478,14 @@ public:
 			Consts::AScale,
 			Consts::GScale
 		);
+		m_rawStreamer.begin(
+			sensorId,
+			SensorType::Name,
+			calibrator.getAccelTimestep(),
+			calibrator.getGyroTimestep(),
+			Consts::AScale,
+			Consts::GScale
+		);
 
 		toggles.onToggleChange([&](SensorToggles toggle, bool value) {
 			if (toggle == SensorToggles::MagEnabled) {
@@ -513,6 +534,11 @@ public:
 
 	// Empty and free unless RAW_SAMPLE_LOGGING is defined.
 	RawSampleLogger<Consts> m_rawLogger;
+	// Empty and free unless RAW_SAMPLE_STREAMING is on. Both take the samples
+	// from the same two call sites, before calibration is applied, so a capture
+	// holds what the sensor produced rather than what the current calibration
+	// made of it.
+	RawSampleStreamer<Consts> m_rawStreamer;
 
 	static bool checkPresent(const RegisterInterface& imuInterface) {
 		I2Cdev::readTimeout = 100;

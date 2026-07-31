@@ -48,6 +48,11 @@ public:
 		// timestamp: `PACKET_ROTATION_DATA_TIMESTAMPED` = 29.
 		PROTOCOL_SAMPLE_TIMESTAMPS,
 
+		// Server accepts batched raw pre-calibration IMU samples:
+		// `PACKET_RAW_SAMPLE_BATCH` = 30. Without it the tracker never streams,
+		// so an old server and new firmware behave exactly as before.
+		PROTOCOL_RAW_SAMPLES,
+
 		// Add new flags here
 
 		BITS_TOTAL,

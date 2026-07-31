@@ -29,6 +29,7 @@
 #include <optional>
 
 #include "../configuration/SensorConfig.h"
+#include "../sensors/softfusion/rawstreamfeatures.h"
 #include "featureflags.h"
 #include "globals.h"
 #include "packets.h"
@@ -97,6 +98,45 @@ public:
 
 	// PACKET_FLEX_DATA 26
 	void sendFlexData(uint8_t sensorId, float flexLevel);
+
+#if RAW_SAMPLE_STREAMING
+	// PACKET_RAW_SAMPLE_BATCH 30, subtype StreamInfo.
+	//
+	// Everything needed to turn raw counts into physical units, which the
+	// counts themselves do not carry. Repeated periodically rather than sent
+	// once: on UDP a server that joined late would otherwise hold samples it
+	// cannot scale.
+	bool sendRawSampleStreamInfo(
+		uint8_t sensorId,
+		const char* sensorName,
+		float accTs,
+		float gyrTs,
+		float accScale,
+		float gyrScale
+	);
+
+	// PACKET_RAW_SAMPLE_BATCH 30, subtype Samples.
+	//
+	// `baseNominalMicros` is the nominal time of the first sample, accumulated
+	// from the configured sample period rather than read from the clock,
+	// because the configured period is what the on-device fusion integrates.
+	// `realMicros` is the true clock at flush, so the gap between configured and
+	// actual ODR stays measurable -- the same pairing `RawSampleLogger`'s
+	// `# t_real` marker exists for.
+	//
+	// `dropped` is cumulative for this stream. It is the difference between a
+	// capture the server can trust and one it must mark holes in.
+	bool sendRawSampleBatch(
+		uint8_t sensorId,
+		RawSampleKind kind,
+		uint32_t sequence,
+		uint32_t dropped,
+		uint64_t baseNominalMicros,
+		uint32_t realMicros,
+		uint16_t count,
+		const int16_t* samples
+	);
+#endif
 
 #if ENABLE_INSPECTION
 	void sendInspectionRawIMUData(
