@@ -39,6 +39,7 @@
 #include "sensorinterface/SensorInterface.h"
 #include "sensorinterface/i2cimpl.h"
 #include "sensors/softfusion/calibrationfeatures.h"
+#include "softfusion/rawstreamfeatures.h"
 #include "status/TPSCounter.h"
 #include "utils.h"
 
@@ -92,6 +93,14 @@ public:
 	// the board this feature is compiled out on is the one with 1770 bytes
 	// left. A disabled feature should cost nothing.
 	virtual void printOnlineEstimate(){};
+
+#if RAW_SAMPLE_STREAMING
+	// Guarded rather than left as an empty default, for the reason #19 and #20
+	// found: a virtual costs a vtable slot in every Sensor subclass plus a
+	// forwarder in every IMU driver, and BOARD_GLOVE_IMU_SLIMEVR_DEV builds
+	// every driver.
+	virtual void setRawSampleStreaming(bool){};
+#endif
 #endif
 	virtual SensorStatus getSensorState();
 	virtual void printTemperatureCalibrationState();

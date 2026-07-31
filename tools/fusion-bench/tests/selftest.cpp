@@ -26,6 +26,7 @@
 #include "../../../src/sensors/softfusion/drivers/magfifo.h"
 #include "../../../src/sensors/softfusion/errormodel.h"
 #include "../../../src/sensors/softfusion/onlineestimator.h"
+#include "../../../src/sensors/softfusion/rawsamplebatch.h"
 #include "../../../src/sensors/softfusion/sixposition.h"
 
 using namespace fb;
@@ -2796,7 +2797,111 @@ void testNoiseFloorRefusesACaptureTooShortToMeasure() {
 	TRUE_(!r.reason.empty());
 }
 
+// --- raw sample batching (#23) -------------------------------------------
+//
+// The one invariant the server cannot check for itself: every batch it receives
+// holds samples that were contiguous in time. The server reconstructs sample
+// times by stepping from the batch's base at the stream's fixed nominal period,
+// so a batch with a hole in the middle would be reconstructed as though the
+// samples after the hole happened earlier than they did -- and nothing
+// downstream could tell. Every re-fusion run over that recording would then
+// integrate a wrong timeline while looking healthy.
+
+void testRawBatchFillsAndReportsBase() {
+	SlimeVR::Sensors::RawSampleBatch<4> batch;
+
+	TRUE_(batch.empty());
+	for (int i = 0; i < 4; i++) {
+		batch.push(1000 + i * 10, static_cast<int16_t>(i), 2, 3);
+	}
+
+	NEAR(static_cast<int>(batch.count()), 4, 0);
+	NEAR(static_cast<int>(batch.baseMicros()), 1000, 0);
+	NEAR(static_cast<int>(batch.dropped()), 0, 0);
+	NEAR(static_cast<int>(batch.sequence()), 0, 0);
+	// Component order must survive, or the axes are silently permuted.
+	NEAR(static_cast<int>(batch.samples()[0]), 0, 0);
+	NEAR(static_cast<int>(batch.samples()[1]), 2, 0);
+	NEAR(static_cast<int>(batch.samples()[2]), 3, 0);
+	NEAR(static_cast<int>(batch.samples()[9]), 3, 0);
+}
+
+void testRawBatchDropsRatherThanOverwrites() {
+	SlimeVR::Sensors::RawSampleBatch<2> batch;
+
+	batch.push(100, 1, 1, 1);
+	batch.push(110, 2, 2, 2);
+	// Two more than fit. Overwriting the oldest would leave a batch whose
+	// samples are not contiguous, which is undetectable downstream; dropping
+	// the incoming ones loses data at a place the counter names.
+	batch.push(120, 3, 3, 3);
+	batch.push(130, 4, 4, 4);
+
+	NEAR(static_cast<int>(batch.count()), 2, 0);
+	NEAR(static_cast<int>(batch.dropped()), 2, 0);
+	NEAR(static_cast<int>(batch.baseMicros()), 100, 0);
+	NEAR(static_cast<int>(batch.samples()[0]), 1, 0);
+	NEAR(static_cast<int>(batch.samples()[3]), 2, 0);
+}
+
+void testRawBatchAdvanceRebasesAndKeepsDrops() {
+	SlimeVR::Sensors::RawSampleBatch<2> batch;
+
+	batch.push(100, 1, 1, 1);
+	batch.push(110, 2, 2, 2);
+	batch.push(120, 3, 3, 3);  // one past capacity, so one drop
+	batch.advance();
+
+	NEAR(static_cast<int>(batch.sequence()), 1, 0);
+	NEAR(static_cast<int>(batch.count()), 0, 0);
+	// Cumulative for the session: a batch arriving after a lossy stretch still
+	// reports the loss, even though the batches dropped alongside it never
+	// arrived to report it themselves.
+	NEAR(static_cast<int>(batch.dropped()), 1, 0);
+
+	batch.push(200, 9, 9, 9);
+	NEAR(static_cast<int>(batch.baseMicros()), 200, 0);
+	NEAR(static_cast<int>(batch.dropped()), 1, 0);
+}
+
+void testRawBatchResetClearsCounters() {
+	SlimeVR::Sensors::RawSampleBatch<2> batch;
+
+	batch.push(100, 1, 1, 1);
+	batch.push(110, 2, 2, 2);
+	batch.push(120, 3, 3, 3);
+	batch.advance();
+	batch.reset();
+
+	// A capture is a session. Carrying counters across sessions would make a
+	// fresh capture look like the continuation of a lossy one.
+	NEAR(static_cast<int>(batch.sequence()), 0, 0);
+	NEAR(static_cast<int>(batch.dropped()), 0, 0);
+	NEAR(static_cast<int>(batch.count()), 0, 0);
+	NEAR(static_cast<int>(batch.baseMicros()), 0, 0);
+}
+
+void testRawBatchSequenceCountsProducedNotSent() {
+	SlimeVR::Sensors::RawSampleBatch<1> batch;
+
+	// advance() is called whether or not the datagram left, so the sequence
+	// numbers batches produced. That is what lets a server detect loss on the
+	// wire: a gap in the sequence it receives means data is missing, whichever
+	// side lost it.
+	for (int i = 0; i < 5; i++) {
+		batch.push(i * 10, 0, 0, 0);
+		batch.advance();
+	}
+	NEAR(static_cast<int>(batch.sequence()), 5, 0);
+	NEAR(static_cast<int>(batch.dropped()), 0, 0);
+}
+
 int main() {
+	testRawBatchFillsAndReportsBase();
+	testRawBatchDropsRatherThanOverwrites();
+	testRawBatchAdvanceRebasesAndKeepsDrops();
+	testRawBatchResetClearsCounters();
+	testRawBatchSequenceCountsProducedNotSent();
 	testQuatBasics();
 	testIntegration();
 	testMetricsOnPerfectEstimate();

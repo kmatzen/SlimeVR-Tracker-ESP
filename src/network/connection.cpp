@@ -437,6 +437,66 @@ void Connection::sendFlexData(uint8_t sensorId, float flexLevel) {
 	));
 }
 
+#if RAW_SAMPLE_STREAMING
+bool Connection::sendRawSampleStreamInfo(
+	uint8_t sensorId,
+	const char* sensorName,
+	float accTs,
+	float gyrTs,
+	float accScale,
+	float gyrScale
+) {
+	if (!m_Connected || !m_ServerFeatures.has(ServerFeatures::PROTOCOL_RAW_SAMPLES)) {
+		return false;
+	}
+
+	return sendPacketCallback(SendPacketType::RawSampleBatch, [&]() {
+		MUST_TRANSFER_BOOL(sendByte(static_cast<uint8_t>(RawSampleBatchType::StreamInfo)
+		));
+		MUST_TRANSFER_BOOL(sendByte(sensorId));
+		MUST_TRANSFER_BOOL(sendFloat(accTs));
+		MUST_TRANSFER_BOOL(sendFloat(gyrTs));
+		MUST_TRANSFER_BOOL(sendFloat(accScale));
+		MUST_TRANSFER_BOOL(sendFloat(gyrScale));
+		MUST_TRANSFER_BOOL(sendShortString(sensorName));
+		return true;
+	});
+}
+
+bool Connection::sendRawSampleBatch(
+	uint8_t sensorId,
+	RawSampleKind kind,
+	uint32_t sequence,
+	uint32_t dropped,
+	uint64_t baseNominalMicros,
+	uint32_t realMicros,
+	uint16_t count,
+	const int16_t* samples
+) {
+	if (!m_Connected || !m_ServerFeatures.has(ServerFeatures::PROTOCOL_RAW_SAMPLES)) {
+		return false;
+	}
+
+	return sendPacketCallback(SendPacketType::RawSampleBatch, [&]() {
+		MUST_TRANSFER_BOOL(sendByte(static_cast<uint8_t>(RawSampleBatchType::Samples)));
+		MUST_TRANSFER_BOOL(sendByte(sensorId));
+		MUST_TRANSFER_BOOL(sendByte(static_cast<uint8_t>(kind)));
+		MUST_TRANSFER_BOOL(sendInt(sequence));
+		MUST_TRANSFER_BOOL(sendInt(dropped));
+		MUST_TRANSFER_BOOL(sendLong(baseNominalMicros));
+		MUST_TRANSFER_BOOL(sendInt(realMicros));
+		MUST_TRANSFER_BOOL(sendShort(count));
+		// Sent component by component rather than as a memcpy of the buffer:
+		// sendShort already writes big-endian, which is what every other field
+		// in this protocol is, and a raw block copy would be host-endian.
+		for (uint16_t i = 0; i < count * 3u; i++) {
+			MUST_TRANSFER_BOOL(sendShort(static_cast<uint16_t>(samples[i])));
+		}
+		return true;
+	});
+}
+#endif
+
 #if ENABLE_INSPECTION
 void Connection::sendInspectionRawIMUData(
 	uint8_t sensorId,
@@ -814,6 +874,46 @@ void Connection::update() {
 #endif
 			}
 
+			break;
+		}
+
+		case ReceivePacketType::RawSampleControl: {
+#if RAW_SAMPLE_STREAMING
+			// Packet type (4) + packet number (8) + sensor_id (1) + state (1).
+			// sensor_id 0xFF addresses every sensor, matching SetConfigFlag.
+			if (len < 14) {
+				m_Logger.warn("Invalid raw sample control packet: too short");
+				break;
+			}
+
+			const uint8_t sensorId = m_Packet[12];
+			const bool streaming = m_Packet[13] != 0;
+			auto& sensors = sensorManager.getSensors();
+
+			if (sensorId == UINT8_MAX) {
+				for (auto& sensor : sensors) {
+					sensor->setRawSampleStreaming(streaming);
+				}
+			} else {
+				if (sensorId >= sensors.size()) {
+					m_Logger.warn("Invalid raw sample control packet: invalid sensor id"
+					);
+					break;
+				}
+				sensors[sensorId]->setRawSampleStreaming(streaming);
+			}
+
+			m_Logger.info(
+				"Raw sample streaming %s for sensor %d",
+				streaming ? "started" : "stopped",
+				sensorId
+			);
+#else
+			// Compiled out on this board. Say so rather than ignoring it: a
+			// silent no-op looks identical to a capture that produced nothing,
+			// which is the failure this whole feature exists to avoid.
+			m_Logger.warn("Raw sample streaming is not compiled into this build");
+#endif
 			break;
 		}
 
