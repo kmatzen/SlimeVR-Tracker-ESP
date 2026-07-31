@@ -269,7 +269,8 @@ Everything above is either synthetic or a static bench test. A tracker on a
 shin, walking, is a different question, and it became answerable only once raw
 samples could be captured over the network
 (kmatzen/SlimeVR-Server#36, #41). Two real captures from an LSM6DSV on a
-WEMOS D1 Mini — ten seconds stationary, fourteen seconds walking in place.
+WEMOS D1 Mini — ten seconds stationary, fourteen seconds of ordinary overground
+walking, in a circle.
 
 **The low side, located in threshold space:**
 
@@ -304,6 +305,13 @@ So it is not `restThGyr` doing the work either. **Real walking never presents a
 quiet window at all** — the shank rotates continuously through the gait cycle,
 and there is no hundred-millisecond stretch where both residuals are small. Rest
 detection cannot false-positive during gait however it is tuned.
+
+One qualification on that capture: it was walked in a circle, so it carries a
+continuous yaw rotation on top of the gait. That makes it a *generous* case for
+this conclusion rather than a marginal one — a straight-line walk has less
+rotation and would be the harder test. The conclusion is very unlikely to
+reverse, since the swing phase alone accounts for the absence of quiet windows,
+but it has not been measured on a straight walk.
 
 Worth recording that this is a case where the synthetic conclusion was *right*.
 The generated `walk` trajectory reached the same answer as a real leg, and the
