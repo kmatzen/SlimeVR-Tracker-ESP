@@ -97,6 +97,18 @@ class SoftFusionSensor : public Sensor {
 
 #if RAW_SAMPLE_STREAMING
 	void setRawSampleStreaming(bool streaming) final {
+		// Timebase read here rather than at setup: the runtime calibration
+		// measures the true sample periods seconds after boot, so a value taken
+		// during motionSetup() is the datasheet nominal. Every sample time in
+		// the resulting .imu is derived from it.
+		if (streaming) {
+			m_rawStreamer.setTimebase(
+				calibrator.getAccelTimestep(),
+				calibrator.getGyroTimestep(),
+				Consts::AScale,
+				Consts::GScale
+			);
+		}
 		m_rawStreamer.setStreaming(streaming);
 	}
 #endif
@@ -478,14 +490,7 @@ public:
 			Consts::AScale,
 			Consts::GScale
 		);
-		m_rawStreamer.begin(
-			sensorId,
-			SensorType::Name,
-			calibrator.getAccelTimestep(),
-			calibrator.getGyroTimestep(),
-			Consts::AScale,
-			Consts::GScale
-		);
+		m_rawStreamer.begin(sensorId, SensorType::Name);
 
 		toggles.onToggleChange([&](SensorToggles toggle, bool value) {
 			if (toggle == SensorToggles::MagEnabled) {

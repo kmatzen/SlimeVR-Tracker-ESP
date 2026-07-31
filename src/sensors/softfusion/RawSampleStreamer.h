@@ -105,16 +105,35 @@ public:
 	/** How often the stream's metadata is repeated, in microseconds. */
 	static constexpr uint32_t InfoIntervalMicros = 2000000;
 
-	void begin(
-		uint8_t sensorId,
-		const char* sensorName,
-		float accTs,
-		float gyrTs,
-		float accScale,
-		float gyrScale
-	) {
+	/**
+	 * Longest a partly-filled batch waits before going out anyway.
+	 *
+	 * Only a liveness bound. At the configured rates a batch fills in 67 ms
+	 * (gyroscope) to 133 ms (accelerometer), so this fires rarely -- it exists so
+	 * a slow or stopped stream still delivers what it has.
+	 */
+	static constexpr uint32_t MaxFlushIntervalMicros = 200000;
+
+	void begin(uint8_t sensorId, const char* sensorName) {
 		m_sensorId = sensorId;
 		m_sensorName = sensorName;
+	}
+
+	/**
+	 * Takes the sample periods and scale factors that will describe the stream.
+	 *
+	 * Read when a capture *starts*, not at `motionSetup`. The runtime
+	 * calibration measures the true sample periods some seconds after boot --
+	 * the log goes from "Sensor timesteps not calibrated" to "Calibrated
+	 * timesteps: Accel 0.008319, Gyro 0.004160" -- so a value captured during
+	 * setup is the datasheet nominal, not what the device runs at.
+	 *
+	 * Measured on hardware, that difference is ~0.15%: 120.18 Hz against a
+	 * nominal 120. Over a five-minute recording it is 0.4 s of timeline error,
+	 * and since every sample time in the `.imu` is derived from this number, it
+	 * would be wrong for the whole file.
+	 */
+	void setTimebase(float accTs, float gyrTs, float accScale, float gyrScale) {
 		m_accTs = accTs;
 		m_gyrTs = gyrTs;
 		m_accScale = accScale;
@@ -142,6 +161,7 @@ public:
 			m_accNanos = 0;
 			m_gyrNanos = 0;
 			m_lastInfoMicros = 0;
+			m_lastFlushMicros = micros();
 		}
 	}
 
@@ -192,8 +212,22 @@ public:
 			);
 		}
 
-		sendStream(RawSampleKind::Accel, m_acc, now);
-		sendStream(RawSampleKind::Gyro, m_gyr, now);
+		// Send a batch when it is full, or when the oldest pending sample has
+		// waited long enough. Flushing on every call was the original behaviour
+		// and it was wrong in a way only hardware showed: this runs from
+		// `sendData()`, which fires at the network send rate, so batches left
+		// with one sample in them.
+		//
+		// Measured on an ESP8266 with an LSM6DSV: 1529 batches carrying 1536
+		// accelerometer samples, and about 370 packets per second from a single
+		// tracker against the ~40 the design assumed. 18% of them never arrived.
+		// The batching existed and did nothing.
+		const bool due = now - m_lastFlushMicros >= MaxFlushIntervalMicros;
+		const bool sent = sendStream(RawSampleKind::Accel, m_acc, now, due)
+						| sendStream(RawSampleKind::Gyro, m_gyr, now, due);
+		if (sent) {
+			m_lastFlushMicros = now;
+		}
 	}
 
 private:
@@ -208,9 +242,12 @@ private:
 		);
 	}
 
-	void sendStream(RawSampleKind kind, Stream& stream, uint32_t realMicros) {
+	bool sendStream(RawSampleKind kind, Stream& stream, uint32_t realMicros, bool due) {
 		if (stream.empty()) {
-			return;
+			return false;
+		}
+		if (stream.count() < BatchCapacity && !due) {
+			return false;
 		}
 		const bool sent = networkConnection.sendRawSampleBatch(
 			m_sensorId,
@@ -224,6 +261,7 @@ private:
 		);
 		stream.advance();
 		(void)sent;
+		return true;
 	}
 
 	bool m_streaming = false;
@@ -238,6 +276,7 @@ private:
 	uint64_t m_accNanos = 0;
 	uint64_t m_gyrNanos = 0;
 	uint32_t m_lastInfoMicros = 0;
+	uint32_t m_lastFlushMicros = 0;
 	Stream m_acc;
 	Stream m_gyr;
 };
@@ -266,7 +305,8 @@ public:
 
 	static constexpr bool Enabled = false;
 
-	void begin(uint8_t, const char*, float, float, float, float) {}
+	void begin(uint8_t, const char*) {}
+	void setTimebase(float, float, float, float) {}
 	void setStreaming(bool) {}
 	[[nodiscard]] bool isStreaming() const { return false; }
 	void logAccel(const RawSensorT*) {}
