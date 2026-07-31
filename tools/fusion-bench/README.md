@@ -263,6 +263,59 @@ and `tumble`, rest is never detected at any accelerometer threshold including
 stock's — `restThGyr` and `biasClip` do that work. Being generous with
 `restThAcc` costs little; being stingy risks the silent failure.
 
+### Both sides of the cliff, on real captures
+
+Everything above is either synthetic or a static bench test. A tracker on a
+shin, walking, is a different question, and it became answerable only once raw
+samples could be captured over the network
+(kmatzen/SlimeVR-Server#36, #41). Two real captures from an LSM6DSV on a
+WEMOS D1 Mini — ten seconds stationary, fourteen seconds walking in place.
+
+**The low side, located in threshold space:**
+
+| `restThAcc` | rest detected | heading drift |
+| --- | --- | --- |
+| ≤ 0.015 | never | **23.35 °/min** |
+| ≥ 0.020 | at 2.00 s | **2.78 °/min** |
+
+The cliff sits between 0.015 and 0.020, and `fusion-bench noise` predicts
+0.01518 from the same capture — inside the bracket, which is the closed-form
+estimator above validated against a direct sweep on hardware rather than against
+generated data.
+
+The shipped 0.06 is about **4× clear of it**.
+
+**The penalty is smaller than the synthetic figure.** Falling off the cliff cost
+8.4× here (23.35 against 2.78 °/min), not the ~200× the generated static dataset
+showed. Both are real; the mechanism is the same and the magnitude depends on
+how much uncorrected bias the device has. Quote the mechanism, not the multiple.
+
+**The high side, on real gait:** the claim above — that `restThAcc` is not what
+rejects motion — holds, and holds harder than stated. On the walking capture
+rest is never detected at *any* setting of any of the three parameters:
+
+| swept on the walk | range tried | rest detected |
+| --- | --- | --- |
+| `restThAcc` | 0.02 → 1.418598 (stock) | never |
+| `restThGyr` | 0.5 → 100 °/s | never |
+| `restMinT` | 2.0 → 0.10 s | never |
+
+So it is not `restThGyr` doing the work either. **Real walking never presents a
+quiet window at all** — the shank rotates continuously through the gait cycle,
+and there is no hundred-millisecond stretch where both residuals are small. Rest
+detection cannot false-positive during gait however it is tuned.
+
+Worth recording that this is a case where the synthetic conclusion was *right*.
+The generated `walk` trajectory reached the same answer as a real leg, and the
+existing advice — be generous with `restThAcc`, stinginess risks the silent
+failure — survives contact with hardware unchanged.
+
+**What is still untested** is the case where a limb is held still while the body
+accelerates: a vehicle, a lift, a tracker on a torso that is being carried. That
+is the one situation where the accelerometer residual is disturbed while the
+gyroscope is quiet, and therefore the one where `restThAcc` would be the guard
+rather than an irrelevance. Nothing here says anything about it.
+
 ## Bench tests on real hardware
 
 These are the physical protocols. They are deliberately over-specified: the
