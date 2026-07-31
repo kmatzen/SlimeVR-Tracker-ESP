@@ -115,6 +115,20 @@ public:
 		float gyrScale
 	);
 
+	// PACKET_RAW_SAMPLE_BATCH 30, subtype Stats.
+	//
+	// Diagnostic counters for a running capture. Over the network because
+	// serial is not usable here: attaching a monitor resets the ESP8266, which
+	// ends the capture and destroys the thing being measured.
+	bool sendRawSampleStats(
+		uint8_t sensorId,
+		const uint32_t counters[8],
+		uint32_t accSequence,
+		uint32_t gyrSequence,
+		uint16_t accBuffered,
+		uint16_t gyrBuffered
+	);
+
 	// PACKET_RAW_SAMPLE_BATCH 30, subtype Samples.
 	//
 	// `baseNominalMicros` is the nominal time of the first sample, accumulated

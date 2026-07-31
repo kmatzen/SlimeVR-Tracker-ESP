@@ -366,7 +366,25 @@ public:
 			return;
 		}
 		m_lastStatsMicros = now;
-		Serial.printf(
+		const uint32_t counters[8] = {
+			m_accPushes,
+			m_gyrPushes,
+			m_flushCalls,
+			m_accBatches,
+			m_gyrBatches,
+			m_refusals,
+			m_sendFailures,
+			m_fifoDropped - m_fifoBaseline,
+		};
+		networkConnection.sendRawSampleStats(
+			m_sensorId,
+			counters,
+			m_acc.sequence(),
+			m_gyr.sequence(),
+			m_acc.count(),
+			m_gyr.count()
+		);
+		(void)Serial.printf(
 			"[RawStream:%u] push a=%lu g=%lu | flush=%lu batch a=%lu g=%lu | "
 			"refused=%lu | buffered a=%u g=%u | fifo %lu->%lu base=%lu | "
 			"stopped-pushes=%lu\n",
